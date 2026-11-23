@@ -1,0 +1,199 @@
+#!/usr/bin/env python3
+"""repo-status: where each of your repos stands, its open issues/PRs and what to do.
+
+Read-only (GitHub via `gh`, no Claude, no tokens). Opens a GTK4 window;
+`repo-status --text` prints the same to the terminal.
+"""
+import json
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+
+def load_repos():
+    """One `owner/name` per line in ~/.config/slashrepo/repos (# = comment).
+    No file: your own non-fork, non-archived repos from `gh repo list`."""
+    import os
+    path = os.path.expanduser("~/.config/slashrepo/repos")
+    if os.path.exists(path):
+        lines = [l.split("#")[0].strip() for l in open(path)]
+        return [l for l in lines if l]
+    r = subprocess.run(["gh", "repo", "list", "--source", "--no-archived", "--limit", "20",
+                        "--json", "nameWithOwner", "--jq", ".[].nameWithOwner"],
+                       capture_output=True, text=True, timeout=60)
+    return r.stdout.split()
+
+
+REPOS = load_repos()
+
+QUERY = """query($o:String!,$n:String!){ repository(owner:$o,name:$n){
+  url pushedAt
+  defaultBranchRef{ name target{ ... on Commit{ statusCheckRollup{state} } } }
+  releases(first:1, orderBy:{field:CREATED_AT, direction:DESC}){ nodes{tagName publishedAt isPrerelease} }
+  issues(states:OPEN, first:30, orderBy:{field:CREATED_AT, direction:DESC}){ totalCount nodes{number title createdAt labels(first:3){nodes{name}}} }
+  pullRequests(states:OPEN, first:30){ totalCount nodes{number title isDraft reviewDecision author{login}
+    commits(last:1){nodes{commit{statusCheckRollup{state}}}} } }
+  vulnerabilityAlerts(states:OPEN){totalCount}
+}}"""
+
+
+def gh(*args):
+    r = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=60)
+    if r.returncode:
+        raise RuntimeError(r.stderr.strip() or "gh failed")
+    return json.loads(r.stdout)
+
+
+def age(iso):
+    d = (datetime.now(timezone.utc) - datetime.fromisoformat(iso.replace("Z", "+00:00"))).days
+    return "today" if d == 0 else f"{d}d ago"
+
+
+def check(full):
+    owner, name = full.split("/")
+    try:
+        r = gh("api", "graphql", "-f", f"query={QUERY}", "-F", f"o={owner}", "-F", f"n={name}")["data"]["repository"]
+    except Exception as e:  # one broken repo must not hide the others
+        return {"repo": full, "error": str(e), "todo": ["gh call failed: check `gh auth status`"]}
+    branch = r["defaultBranchRef"]["name"]
+    ci = ((r["defaultBranchRef"]["target"] or {}).get("statusCheckRollup") or {}).get("state", "NONE")
+    rel = (r["releases"]["nodes"] or [None])[0]
+    unreleased = None
+    if rel:
+        try:
+            unreleased = gh("api", f"repos/{full}/compare/{rel['tagName']}...{branch}")["ahead_by"]
+        except Exception:
+            pass
+    prs = [{"n": p["number"], "title": p["title"], "draft": p["isDraft"], "by": p["author"]["login"] if p["author"] else "?",
+            "review": p["reviewDecision"],
+            "ci": ((p["commits"]["nodes"] or [{}])[0].get("commit", {}).get("statusCheckRollup") or {}).get("state", "NONE")}
+           for p in r["pullRequests"]["nodes"]]
+    issues = [{"n": i["number"], "title": i["title"], "age": age(i["createdAt"]),
+               "labels": [l["name"] for l in i["labels"]["nodes"]]} for i in r["issues"]["nodes"]]
+    alerts = r["vulnerabilityAlerts"]["totalCount"]
+
+    todo = []
+    if ci in ("FAILURE", "ERROR"):
+        todo.append(f"CI is red on {branch}: fix first")
+    if alerts:
+        todo.append(f"{alerts} open Dependabot security alert(s)")
+    for p in prs:
+        if p["draft"]:
+            continue
+        if p["ci"] in ("FAILURE", "ERROR"):
+            todo.append(f"PR #{p['n']} has failing checks")
+        elif p["ci"] in ("SUCCESS", "NONE"):
+            todo.append(f"PR #{p['n']} is green: review / merge")
+    if unreleased:
+        todo.append(f"{unreleased} commit(s) on {branch} since {rel['tagName']}: release when ready")
+    if issues:
+        todo.append(f"{r['issues']['totalCount']} open issue(s) to triage")
+    return {"repo": full, "url": r["url"], "pushed": age(r["pushedAt"]), "branch": branch, "ci": ci,
+            "release": rel and {"tag": rel["tagName"], "when": age(rel["publishedAt"]), "pre": rel["isPrerelease"]},
+            "unreleased": unreleased, "alerts": alerts, "prs": prs, "issues": issues,
+            "issue_total": r["issues"]["totalCount"], "todo": todo or ["nothing to do"]}
+
+
+def check_all():
+    with ThreadPoolExecutor(8) as ex:
+        return list(ex.map(check, REPOS))
+
+
+def summary_lines(s):
+    if "error" in s:
+        return [f"ERROR: {s['error']}"]
+    rel = s["release"]
+    rel_txt = f"{rel['tag']}{' (pre-release)' if rel['pre'] else ''}, {rel['when']}" if rel else "no releases"
+    out = [f"release: {rel_txt}   |   {s['branch']} CI: {s['ci'].lower()}   |   last push {s['pushed']}"]
+    for p in s["prs"]:
+        out.append(f"PR #{p['n']} {p['title']}  [{'draft, ' if p['draft'] else ''}checks {p['ci'].lower()}, by {p['by']}]")
+    for i in s["issues"]:
+        lab = f" [{', '.join(i['labels'])}]" if i["labels"] else ""
+        out.append(f"issue #{i['n']} {i['title']}  ({i['age']}){lab}")
+    if s["issue_total"] > len(s["issues"]):
+        out.append(f"... and {s['issue_total'] - len(s['issues'])} more issues")
+    return out
+
+
+def light(s):
+    if "error" in s or s["ci"] in ("FAILURE", "ERROR") or s["alerts"]:
+        return "red"
+    return "green" if s["todo"] == ["nothing to do"] else "orange"
+
+
+def text_mode():
+    for s in check_all():
+        print(f"\n== {s['repo']}  [{light(s)}]")
+        for line in summary_lines(s):
+            print("   " + line)
+        for t in s["todo"]:
+            print("   TODO: " + t)
+
+
+def gui_mode():
+    import threading
+    import gi
+    gi.require_version("Gtk", "4.0")
+    from gi.repository import GLib, Gtk
+
+    colours = {"red": "#e5534b", "orange": "#d29922", "green": "#57ab5a"}
+
+    def esc(t):
+        return GLib.markup_escape_text(t)
+
+    def on_activate(app):
+        win = Gtk.ApplicationWindow(application=app, title="Repo Status", default_width=900, default_height=760)
+        header = Gtk.HeaderBar()
+        btn = Gtk.Button(label="Refresh")
+        header.pack_start(btn)
+        win.set_titlebar(header)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14, margin_top=14, margin_bottom=14,
+                      margin_start=16, margin_end=16)
+        scroll = Gtk.ScrolledWindow(child=box)
+        win.set_child(scroll)
+
+        def label(markup, **kw):
+            lb = Gtk.Label(xalign=0, wrap=True, selectable=True, **kw)
+            lb.set_markup(markup)
+            return lb
+
+        def show(results):
+            while (c := box.get_first_child()):
+                box.remove(c)
+            stamp = datetime.now().strftime("%H:%M")
+            box.append(label(f"<small>checked {stamp} — {len(results)} repos</small>"))
+            for s in results:
+                frame = Gtk.Frame()
+                inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, margin_top=8, margin_bottom=8,
+                                margin_start=10, margin_end=10)
+                frame.set_child(inner)
+                link = f"<a href='{esc(s.get('url', ''))}'>{esc(s['repo'])}</a>" if s.get("url") else esc(s["repo"])
+                inner.append(label(f"<span foreground='{colours[light(s)]}' size='large'>●</span> <b>{link}</b>"))
+                lines = summary_lines(s)
+                inner.append(label(f"<small>{esc(lines[0])}</small>"))
+                for line in lines[1:]:
+                    inner.append(label("   " + esc(line)))
+                for t in s["todo"]:
+                    inner.append(label(f"<b>→ {esc(t)}</b>"))
+                box.append(frame)
+            btn.set_sensitive(True)
+            return False
+
+        def refresh(*_):
+            btn.set_sensitive(False)
+            while (c := box.get_first_child()):
+                box.remove(c)
+            box.append(label("checking GitHub…"))
+            threading.Thread(target=lambda: GLib.idle_add(show, check_all()), daemon=True).start()
+
+        btn.connect("clicked", refresh)
+        refresh()
+        win.present()
+
+    app = Gtk.Application(application_id="io.github.ludalunizz.SlashRepo")
+    app.connect("activate", on_activate)
+    app.run([])
+
+
+if __name__ == "__main__":
+    text_mode() if "--text" in sys.argv else gui_mode()

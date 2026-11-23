@@ -1,0 +1,6 @@
+#!/bin/sh
+# Claude Code UserPromptSubmit hook: open the Repo Status window when the prompt says
+# "repo check", "repos check", "check the repos" or starts with /repo. Always exits 0.
+jq -r '.prompt // ""' | grep -qiE 'repos? check|check (up on )?(the |my )?repos\b|^ */repo( |$)' &&
+  { setsid nohup "${REPO_STATUS:-$HOME/.local/bin/repo-status}" >/dev/null 2>&1 </dev/null & }
+exit 0

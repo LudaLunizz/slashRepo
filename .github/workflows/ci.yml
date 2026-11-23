@@ -1,0 +1,25 @@
+name: CI
+
+# Every push to main and every pull request: syntax of the script and the
+# installer, and the hook's prompt matching.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: python3 -I -c "import ast,sys; ast.parse(open('bin/repo-status').read())"
+      - run: sh -n install.sh && sh -n bin/repo-status-hook
+      - run: tests/hook_test.sh

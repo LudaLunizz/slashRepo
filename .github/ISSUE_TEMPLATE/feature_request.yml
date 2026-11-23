@@ -1,0 +1,11 @@
+name: Feature request
+description: Something slashRepo should show or do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What you would like
+      description: What it should show or do, and why
+    validations:
+      required: true

@@ -1,0 +1,25 @@
+name: Bug report
+description: Something does not work as expected
+labels: [bug]
+body:
+  - type: input
+    id: system
+    attributes:
+      label: System
+      description: Distribution, desktop, and the output of `gh --version`
+      placeholder: Ubuntu 26.04, GNOME, gh 2.80.0
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you typed or clicked, what you expected and what happened instead
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output
+      description: The output of `repo-status --text`, if the report or the window is wrong
+      render: text
