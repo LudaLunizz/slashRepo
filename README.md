@@ -27,15 +27,16 @@ It is also read-only. It looks, it never touches.
 
 ## Install
 
-Needs `gh` (logged in, for GitHub repos), `jq`, and `python3` with PyGObject + GTK 4.10 or newer (Linux).
+Needs `gh` (logged in, for GitHub repos), `jq` (for Claude Code), and `python3` with PyGObject + GTK 4.10 or newer (Linux).
 
 ```sh
 git clone https://github.com/LudaLunizz/slashRepo
 cd slashRepo && ./install.sh
 ```
 
-This copies `repo-status` and `repo-status-hook` to `~/.local/bin`, `repo.md` to `~/.claude/commands`,
-adds a desktop entry, and adds the hook to `~/.claude/settings.json` (backup: `settings.json.bak-slashrepo`).
+This copies `repo-status` and `repo-status-hook` to `~/.local/bin` and adds a desktop entry. For Claude Code it
+adds `repo.md` to `~/.claude/commands` and the hook to `~/.claude/settings.json` (backup: `settings.json.bak-slashrepo`);
+for the other agents see below. Only agents that are installed get anything.
 Running it again changes nothing.
 
 ## Tabs: group your repos
@@ -95,9 +96,27 @@ Codeberg works the same way: public repos need no login, `CODEBERG_TOKEN` for pr
 only to codeberg.org). Self-hosted Forgejo or Gitea servers are not supported yet.
 GitLab and Codeberg have no Dependabot alerts here.
 
+## Other coding agents
+
+`install.sh` also sets up `/repo` for the other agents it finds on your machine:
+
+| Agent | Type | How it opens | Tokens for the report |
+|---|---|---|---|
+| Claude Code | `/repo` or "repo check" | a hook opens the window | 0 |
+| opencode | `/repo` | the command runs `repo-status` itself | 0 |
+| Gemini CLI | `/repo` | the command runs it (asks you once first) | 0 |
+| Codex | `$repo` (or pick it in `/skills`) | a `repo` skill: the agent runs one command | 0 (a few for that one command) |
+| Antigravity | `/repo` | a `repo` skill: the agent runs one command | 0 (a few for that one command) |
+
+Codex and Antigravity have no hook that fits, and they replaced custom commands with skills, so there
+the agent itself runs `repo-status` once. It never reads the report. If your agent runs commands in a
+sandbox without network or without your desktop, the window cannot open from there: allow that one
+command outside the sandbox, or open `repo-status` from the app menu. opencode and Gemini CLI say so
+in one line when they cannot reach it.
+
 ## Use
 
-- `/repo`, "repo check" or "check the repos" in Claude Code opens the window.
+- `/repo`, "repo check" or "check the repos" in Claude Code opens the window (other agents: see above).
 - `repo-status` opens it from a terminal or the app menu.
 - `repo-status --text` prints the same report as plain text, handy over SSH (`--text Friends`: one tab).
 

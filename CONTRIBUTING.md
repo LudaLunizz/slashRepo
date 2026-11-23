@@ -9,8 +9,11 @@ commands; the [README](README.md) says what slashRepo does.
 |---|---|
 | `bin/repo-status` | the GTK4 window and `--text` report (Python, uses `gh`) |
 | `bin/repo-status-hook` | the Claude Code `UserPromptSubmit` hook that opens it |
-| `commands/repo.md` | the `/repo` command |
-| `install.sh` | copies all of it into place and adds the hook to `settings.json` |
+| `commands/repo.md` | the `/repo` command for Claude Code |
+| `commands/opencode/`, `commands/gemini/` | `/repo` for opencode and Gemini CLI |
+| `skills/repo/SKILL.md` | the `repo` skill for Codex and Antigravity |
+| `install.sh` | copies all of it into place for the agents it finds, adds the Claude Code hook |
+| `tests/install_test.sh` | the installer in a throwaway HOME: which agent gets what |
 | `tests/hook_test.sh` | which prompts open the window |
 | `tests/config_test.py` | the tabs file: reading it and every add / remove / move / sort |
 
@@ -25,6 +28,7 @@ python3 -I -c "import ast; ast.parse(open('bin/repo-status').read())"
 sh -n install.sh && sh -n bin/repo-status-hook
 tests/hook_test.sh
 python3 -I tests/config_test.py
+tests/install_test.sh
 ```
 
 CI cannot open the window; say in the pull request whether you tried
