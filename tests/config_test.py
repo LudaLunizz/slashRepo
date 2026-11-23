@@ -102,9 +102,9 @@ def fake_urlopen(req, timeout):
             "webUrl": "https://gitlab.com/g/p", "lastActivityAt": "2026-01-01T00:00:00Z", "starCount": 7,
             "forksCount": 2, "repository": {"rootRef": "main"},
             "releases": {"nodes": [{"tagName": "v1", "releasedAt": "2026-01-01T00:00:00Z", "upcomingRelease": False}]},
-            "issues": {"count": 1, "nodes": [{"iid": "4", "title": "bug", "createdAt": "2026-01-01T00:00:00Z",
+            "issues": {"count": 1, "nodes": [{"iid": "4", "title": "bug", "webUrl": "https://gitlab.com/g/p/-/issues/4", "createdAt": "2026-01-01T00:00:00Z",
                                               "labels": {"nodes": [{"title": "bug"}]}}]},
-            "mergeRequests": {"nodes": [{"iid": "9", "title": "fix", "draft": False, "author": {"username": "x"},
+            "mergeRequests": {"nodes": [{"iid": "9", "title": "fix", "webUrl": "https://gitlab.com/g/p/-/merge_requests/9", "draft": False, "author": {"username": "x"},
                                          "headPipeline": {"status": "FAILED"}}]}}}})
     if "/pipelines" in req.full_url:
         return Resp([{"status": "success"}])
@@ -115,7 +115,7 @@ os.environ.pop("GITLAB_HOST", None)
 card = rs.check("gitlab.com/g/p")
 assert card["ci"] == "SUCCESS" and card["stars"] == 7 and card["unreleased"] == 2, card
 assert "MR !9 has failing checks" in card["todo"] and "2 commit(s) on main since v1: release when ready" in card["todo"]
-assert rs.summary_lines(card)[1].startswith("MR !9 fix") and rs.light(card) == "orange"
+assert rs.summary_lines(card)[1] == ("MR !9 fix  [checks failure, by x]", "https://gitlab.com/g/p/-/merge_requests/9") and rs.light(card) == "orange"
 assert all(auth == "Bearer secret" for _, auth in sent), sent
 sent.clear()
 rs.check("git.example.org/g/p")
@@ -141,7 +141,7 @@ def cb_urlopen(req, timeout):
         return CbResp([{"number": 5, "title": "bug", "created_at": "2026-01-01T00:00:00+01:00",
                         "labels": [{"name": "bug"}]}], total="12")
     if u.startswith("/pulls"):
-        return CbResp([{"number": 6, "title": "fix", "draft": False, "user": {"login": "x"}, "head": {"sha": "abc"}}])
+        return CbResp([{"number": 6, "title": "fix", "html_url": "https://codeberg.org/o/r/pulls/6", "draft": False, "user": {"login": "x"}, "head": {"sha": "abc"}}])
     if u == "/commits/abc/status":
         return CbResp({"state": "failure"})
     return CbResp({"state": "success"})  # the default branch
@@ -152,6 +152,7 @@ card = rs.check("codeberg.org/o/r")
 assert card["ci"] == "SUCCESS" and card["stars"] == 3 and card["issue_total"] == 12 and card["unreleased"] == 4, card
 assert "PR #6 has failing checks" in card["todo"] and "12 open issue(s) to triage" in card["todo"], card["todo"]
 assert sent and all(auth == "token cb" for _, auth in sent), sent
+assert rs.summary_lines(card)[1][1] == "https://codeberg.org/o/r/pulls/6"
 os.environ.pop("CODEBERG_TOKEN"); os.environ.pop("GITLAB_TOKEN")
 
 print("config tests ok")

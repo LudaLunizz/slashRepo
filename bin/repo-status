@@ -171,8 +171,8 @@ QUERY = """query($o:String!,$n:String!){ repository(owner:$o,name:$n){
   url pushedAt stargazerCount forkCount
   defaultBranchRef{ name target{ ... on Commit{ statusCheckRollup{state} } } }
   releases(first:1, orderBy:{field:CREATED_AT, direction:DESC}){ nodes{tagName publishedAt isPrerelease} }
-  issues(states:OPEN, first:30, orderBy:{field:CREATED_AT, direction:DESC}){ totalCount nodes{number title createdAt labels(first:3){nodes{name}}} }
-  pullRequests(states:OPEN, first:30){ totalCount nodes{number title isDraft reviewDecision author{login}
+  issues(states:OPEN, first:30, orderBy:{field:CREATED_AT, direction:DESC}){ totalCount nodes{number title url createdAt labels(first:3){nodes{name}}} }
+  pullRequests(states:OPEN, first:30){ totalCount nodes{number title url isDraft reviewDecision author{login}
     commits(last:1){nodes{commit{statusCheckRollup{state}}}} } }
   vulnerabilityAlerts(states:OPEN){totalCount}
 }}"""
@@ -205,11 +205,11 @@ def github(full):
             "branch": branch, "pr": "PR #", "unreleased": unreleased,
             "ci": ((r["defaultBranchRef"]["target"] or {}).get("statusCheckRollup") or {}).get("state", "NONE"),
             "release": rel and {"tag": rel["tagName"], "when": rel["publishedAt"], "pre": rel["isPrerelease"]},
-            "prs": [{"n": p["number"], "title": p["title"], "draft": p["isDraft"],
+            "prs": [{"n": p["number"], "title": p["title"], "url": p["url"], "draft": p["isDraft"],
                      "by": p["author"]["login"] if p["author"] else "?",
                      "ci": ((p["commits"]["nodes"] or [{}])[0].get("commit", {}).get("statusCheckRollup") or {})
                      .get("state", "NONE")} for p in r["pullRequests"]["nodes"]],
-            "issues": [{"n": i["number"], "title": i["title"], "created": i["createdAt"],
+            "issues": [{"n": i["number"], "title": i["title"], "url": i["url"], "created": i["createdAt"],
                         "labels": [l["name"] for l in i["labels"]["nodes"]]} for i in r["issues"]["nodes"]],
             "issue_total": r["issues"]["totalCount"], "alerts": r["vulnerabilityAlerts"]["totalCount"]}
 
@@ -217,8 +217,8 @@ def github(full):
 GITLAB_QUERY = """query($p:ID!){ project(fullPath:$p){
   webUrl lastActivityAt starCount forksCount repository{rootRef}
   releases(first:1, sort:RELEASED_AT_DESC){ nodes{tagName releasedAt upcomingRelease} }
-  issues(state:opened, first:30, sort:CREATED_DESC){ count nodes{iid title createdAt labels(first:3){nodes{title}}} }
-  mergeRequests(state:opened, first:30){ nodes{iid title draft author{username} headPipeline{status}} }
+  issues(state:opened, first:30, sort:CREATED_DESC){ count nodes{iid title webUrl createdAt labels(first:3){nodes{title}}} }
+  mergeRequests(state:opened, first:30){ nodes{iid title webUrl draft author{username} headPipeline{status}} }
 }}"""
 # GitLab pipeline states -> the GitHub words the rest of the script uses
 PIPELINE = {"success": "SUCCESS", "failed": "FAILURE", "running": "PENDING", "pending": "PENDING",
@@ -260,11 +260,11 @@ def gitlab(full):
             "branch": branch, "pr": "MR !", "unreleased": unreleased,
             "ci": PIPELINE.get(runs[0]["status"], "NONE") if runs else "NONE",
             "release": rel and {"tag": rel["tagName"], "when": rel["releasedAt"], "pre": rel["upcomingRelease"]},
-            "prs": [{"n": m["iid"], "title": m["title"], "draft": m["draft"],
+            "prs": [{"n": m["iid"], "title": m["title"], "url": m["webUrl"], "draft": m["draft"],
                      "by": (m["author"] or {}).get("username", "?"),
                      "ci": PIPELINE.get(((m["headPipeline"] or {}).get("status") or "").lower(), "NONE")}
                     for m in r["mergeRequests"]["nodes"]],
-            "issues": [{"n": i["iid"], "title": i["title"], "created": i["createdAt"],
+            "issues": [{"n": i["iid"], "title": i["title"], "url": i["webUrl"], "created": i["createdAt"],
                         "labels": [l["title"] for l in i["labels"]["nodes"]]} for i in r["issues"]["nodes"]],
             "issue_total": r["issues"]["count"], "alerts": 0}
 
@@ -309,9 +309,9 @@ def codeberg(full):
     return {"url": r["html_url"], "pushed": r["updated_at"], "stars": r["stars_count"], "forks": r["forks_count"],
             "branch": branch, "pr": "PR #", "unreleased": unreleased, "ci": ci(branch),
             "release": rel and {"tag": rel["tag_name"], "when": rel["published_at"], "pre": rel["prerelease"]},
-            "prs": [{"n": p["number"], "title": p["title"], "draft": bool(p.get("draft")),
+            "prs": [{"n": p["number"], "title": p["title"], "url": p.get("html_url"), "draft": bool(p.get("draft")),
                      "by": (p.get("user") or {}).get("login", "?"), "ci": c} for p, c in zip(pulls, pr_ci)],
-            "issues": [{"n": i["number"], "title": i["title"], "created": i["created_at"],
+            "issues": [{"n": i["number"], "title": i["title"], "url": i.get("html_url"), "created": i["created_at"],
                         "labels": [l["name"] for l in i["labels"]]} for i in issues],
             "issue_total": int(head.get("X-Total-Count") or len(issues)), "alerts": 0}
 
@@ -355,19 +355,21 @@ def check_all(repos):
 
 
 def summary_lines(s):
+    """[(text, url or None)]: the status line, then one line per PR and issue (url = its page)."""
     if "error" in s:
-        return [f"ERROR: {s['error']}"]
+        return [(f"ERROR: {s['error']}", None)]
     rel = s["release"]
     rel_txt = f"{rel['tag']}{' (pre-release)' if rel['pre'] else ''}, {rel['when']}" if rel else "no releases"
-    out = [f"release: {rel_txt}   |   {s['branch']} CI: {s['ci'].lower()}   |   last push {s['pushed']}"
-           f"   |   ★ {s['stars']}  forks {s['forks']}"]
+    out = [(f"release: {rel_txt}   |   {s['branch']} CI: {s['ci'].lower()}   |   last push {s['pushed']}"
+            f"   |   ★ {s['stars']}  forks {s['forks']}", None)]
     for p in s["prs"]:
-        out.append(f"{s['pr']}{p['n']} {p['title']}  [{'draft, ' if p['draft'] else ''}checks {p['ci'].lower()}, by {p['by']}]")
+        out.append((f"{s['pr']}{p['n']} {p['title']}  [{'draft, ' if p['draft'] else ''}checks {p['ci'].lower()}, "
+                    f"by {p['by']}]", p.get("url")))
     for i in s["issues"]:
         lab = f" [{', '.join(i['labels'])}]" if i["labels"] else ""
-        out.append(f"issue #{i['n']} {i['title']}  ({i['age']}){lab}")
+        out.append((f"issue #{i['n']} {i['title']}  ({i['age']}){lab}", i.get("url")))
     if s["issue_total"] > len(s["issues"]):
-        out.append(f"... and {s['issue_total'] - len(s['issues'])} more issues")
+        out.append((f"... and {s['issue_total'] - len(s['issues'])} more issues", None))
     return out
 
 
@@ -387,7 +389,7 @@ def text_mode(only=None):
         for repo in ordered(tab["repos"], tab["sort"], results):
             s = results[repo]
             print(f"\n== {s['repo']}  [{light(s)}]")
-            for line in summary_lines(s):
+            for line, _url in summary_lines(s):
                 print("   " + line)
             for t in s["todo"]:
                 print("   TODO: " + t)
@@ -397,7 +399,7 @@ def gui_mode():
     import threading
     import gi
     gi.require_version("Gtk", "4.0")
-    from gi.repository import GLib, Gtk
+    from gi.repository import Gdk, GLib, Gtk
 
     colours = {"red": "#e5534b", "orange": "#d29922", "green": "#57ab5a", "grey": "#768390", "link": "#539bf5"}
     rank = ["grey", "green", "orange", "red"]
@@ -407,6 +409,11 @@ def gui_mode():
         return GLib.markup_escape_text(t)
 
     def on_activate(app):
+        css = Gtk.CssProvider()  # link buttons as tight as text lines; a theme button is ~2 lines tall
+        css.load_from_string("button.slink { padding: 0 4px; min-height: 0; border: none; box-shadow: none; "
+                             "background: none; } button.slink:hover label { text-decoration-line: underline; }")
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css,
+                                                  Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
         results = {}   # repo -> check() result; cleared by Refresh
         busy = set()   # repos being checked right now
         stamp = [""]
@@ -439,6 +446,13 @@ def gui_mode():
                 return False
             GLib.idle_add(run)
 
+        def link(markup, url):
+            """A flat button that opens url: a link inside a selectable label starts a selection on click."""
+            b = Gtk.Button(has_frame=False, tooltip_text=f"Open {url}", halign=Gtk.Align.START, css_classes=["slink"])
+            b.set_child(label(f"<span foreground='{colours['link']}'>{markup}</span>", selectable=False))
+            b.connect("clicked", lambda _b: Gtk.UriLauncher.new(url).launch(win, None, None, None))
+            return b
+
         def card(repo, tab_name, tab, pos, count):
             s = results.get(repo)
             frame = Gtk.Frame()
@@ -448,13 +462,7 @@ def gui_mode():
             top = Gtk.Box(spacing=4)
             dot = colours[light(s)] if s else colours["grey"]
             top.append(label(f"<span foreground='{dot}' size='large'>●</span>"))
-            # a button, not a link in the label: in a selectable label a click starts a selection instead
-            url = (s or {}).get("url") or web_url(repo)
-            name = Gtk.Button(has_frame=False, tooltip_text=f"Open {url}")
-            name.set_child(label(f"<b><span foreground='{colours['link']}' underline='single'>{esc(repo)}</span></b>",
-                                 selectable=False))
-            name.connect("clicked", lambda _b: Gtk.UriLauncher.new(url).launch(win, None, None, None))
-            top.append(name)
+            top.append(link(f"<b><u>{esc(repo)}</u></b>", (s or {}).get("url") or web_url(repo)))
             top.append(Gtk.Box(hexpand=True))
             for text, tip, step in (("▲", "Move up", -1), ("▼", "Move down", 1)):
                 b = Gtk.Button(label=text, tooltip_text=tip, has_frame=False)
@@ -470,9 +478,9 @@ def gui_mode():
                 inner.append(label("<small>checking GitHub…</small>"))
                 return frame
             lines = summary_lines(s)
-            inner.append(label(f"<small>{esc(lines[0])}</small>"))
-            for line in lines[1:]:
-                inner.append(label("   " + esc(line)))
+            inner.append(label(f"<small>{esc(lines[0][0])}</small>"))
+            for line, url in lines[1:]:
+                inner.append(link(esc(line), url) if url else label("   " + esc(line)))
             for t in s["todo"]:
                 inner.append(label(f"<b>→ {esc(t)}</b>"))
             return frame
