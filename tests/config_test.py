@@ -55,6 +55,11 @@ assert rs.ordered(["a/1", "a/2", "a/3"], "stars", res) == ["a/2", "a/1", "a/3"]
 assert rs.ordered(["a/1", "a/2", "a/3"], "forks", res) == ["a/1", "a/2", "a/3"]
 assert rs.ordered(["a/2", "a/1"], "mine", res) == ["a/2", "a/1"]
 
+# Card titles open the repo page, also before (or without) a check.
+assert rs.web_url("cli/cli") == "https://github.com/cli/cli"
+assert rs.web_url("gitlab.com/g/sub/p") == "https://gitlab.com/g/sub/p"
+assert rs.web_url("codeberg.org/o/r") == "https://codeberg.org/o/r"
+
 # Input checks.
 assert rs.repo_name("https://github.com/storytold/pdfcraft.git/") == "storytold/pdfcraft"
 assert rs.repo_name(" cli/cli ") == "cli/cli"

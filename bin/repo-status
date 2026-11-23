@@ -154,6 +154,11 @@ def edit(change, *args):
     os.replace(CONFIG + ".tmp", CONFIG)
 
 
+def web_url(repo):
+    """The repo's page: GitLab/Codeberg lines carry their host, GitHub lines are owner/name."""
+    return f"https://{repo}" if "." in repo.split("/")[0] else f"https://github.com/{repo}"
+
+
 def ordered(repos, sort, results):
     """repos in the tab's order; stars/forks sort high to low, unknown (not checked yet) last."""
     if sort == "mine":
@@ -394,7 +399,7 @@ def gui_mode():
     gi.require_version("Gtk", "4.0")
     from gi.repository import GLib, Gtk
 
-    colours = {"red": "#e5534b", "orange": "#d29922", "green": "#57ab5a", "grey": "#768390"}
+    colours = {"red": "#e5534b", "orange": "#d29922", "green": "#57ab5a", "grey": "#768390", "link": "#539bf5"}
     rank = ["grey", "green", "orange", "red"]
     sort_labels = ["My order", "Stars", "Forks"]
 
@@ -421,7 +426,7 @@ def gui_mode():
         win.set_child(outer)
 
         def label(markup, **kw):
-            lb = Gtk.Label(xalign=0, wrap=True, selectable=True, **kw)
+            lb = Gtk.Label(**{"xalign": 0, "wrap": True, "selectable": True, **kw})
             lb.set_markup(markup)
             return lb
 
@@ -441,9 +446,16 @@ def gui_mode():
                             margin_start=10, margin_end=10)
             frame.set_child(inner)
             top = Gtk.Box(spacing=4)
-            link = f"<a href='{esc(s['url'])}'>{esc(repo)}</a>" if s and s.get("url") else esc(repo)
             dot = colours[light(s)] if s else colours["grey"]
-            top.append(label(f"<span foreground='{dot}' size='large'>●</span> <b>{link}</b>", hexpand=True))
+            top.append(label(f"<span foreground='{dot}' size='large'>●</span>"))
+            # a button, not a link in the label: in a selectable label a click starts a selection instead
+            url = (s or {}).get("url") or web_url(repo)
+            name = Gtk.Button(has_frame=False, tooltip_text=f"Open {url}")
+            name.set_child(label(f"<b><span foreground='{colours['link']}' underline='single'>{esc(repo)}</span></b>",
+                                 selectable=False))
+            name.connect("clicked", lambda _b: Gtk.UriLauncher.new(url).launch(win, None, None, None))
+            top.append(name)
+            top.append(Gtk.Box(hexpand=True))
             for text, tip, step in (("▲", "Move up", -1), ("▼", "Move down", 1)):
                 b = Gtk.Button(label=text, tooltip_text=tip, has_frame=False)
                 # own order only: under stars/forks the position comes from the numbers
