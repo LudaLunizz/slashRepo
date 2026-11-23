@@ -1,6 +1,6 @@
 # slashRepo
 
-**Type `/repo`. Your repos show up. The AI spends zero tokens on it.**
+**Type `/repo`. Your repos show up, from GitHub and GitLab. The AI spends zero tokens on it.**
 
 ![The flow: /repo, a hook, a script, a window, and 0 tokens for the info](docs/flow.svg)
 
@@ -27,7 +27,7 @@ It is also read-only. It looks, it never touches.
 
 ## Install
 
-Needs `gh` (logged in), `jq`, and `python3` with PyGObject + GTK 4.10 or newer (Linux).
+Needs `gh` (logged in, for GitHub repos), `jq`, and `python3` with PyGObject + GTK 4.10 or newer (Linux).
 
 ```sh
 git clone https://github.com/LudaLunizz/slashRepo
@@ -73,6 +73,22 @@ repo-status --tabs                      # list it all
 
 No file yet? Then you get one tab with your own non-fork, non-archived repos (`gh repo list`, newest 20).
 The first change you make writes those to the file, so they stay.
+
+## GitLab
+
+GitLab projects sit in the same tabs. Write them with their host, or paste the link:
+
+```ini
+[Friends]
+a-friend/cool-lib                 # GitHub
+gitlab.com/gitlab-org/cli         # GitLab
+gitlab.com/group/subgroup/project
+```
+
+Public projects need no login. For private ones set `GITLAB_TOKEN` (a read-only token is enough). A
+self-hosted GitLab works too (`git.example.org/team/app`); set `GITLAB_HOST=git.example.org` if its
+projects need the token. The token is only ever sent to that one host. GitLab shows merge requests
+(`MR !12`) and pipelines where GitHub shows PRs and checks; it has no Dependabot alerts here.
 
 ## Use
 
