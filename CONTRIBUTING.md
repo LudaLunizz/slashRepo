@@ -12,6 +12,7 @@ commands; the [README](README.md) says what slashRepo does.
 | `commands/repo.md` | the `/repo` command |
 | `install.sh` | copies all of it into place and adds the hook to `settings.json` |
 | `tests/hook_test.sh` | which prompts open the window |
+| `tests/config_test.py` | the tabs file: reading it and every add / remove / move / sort |
 
 Needs `gh` (logged in), `jq`, and `python3` with PyGObject + GTK 4 to see the window.
 
@@ -23,6 +24,7 @@ These are what CI runs (`.github/workflows/ci.yml`):
 python3 -I -c "import ast; ast.parse(open('bin/repo-status').read())"
 sh -n install.sh && sh -n bin/repo-status-hook
 tests/hook_test.sh
+python3 -I tests/config_test.py
 ```
 
 CI cannot open the window; say in the pull request whether you tried

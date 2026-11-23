@@ -5,29 +5,154 @@ Read-only (GitHub via `gh`, no Claude, no tokens). Opens a GTK4 window;
 `repo-status --text` prints the same to the terminal.
 """
 import json
+import os
+import re
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
-def load_repos():
-    """One `owner/name` per line in ~/.config/slashrepo/repos (# = comment).
-    No file: your own non-fork, non-archived repos from `gh repo list`."""
-    import os
-    path = os.path.expanduser("~/.config/slashrepo/repos")
-    if os.path.exists(path):
-        lines = [l.split("#")[0].strip() for l in open(path)]
-        return [l for l in lines if l]
+CONFIG = os.path.expanduser("~/.config/slashrepo/repos")
+DEFAULT_TAB = "My repos"
+SORTS = ("mine", "stars", "forks")  # "mine" = the order of the lines in the file
+
+# The config file: one owner/name per line, `#` starts a comment. A `[Tab name]` line starts a
+# tab; lines before the first one go in "My repos". `sort = stars` (or forks) inside a tab sorts it.
+# Edits below work on the file's lines, so comments and hand-made order survive.
+
+
+def entries(lines):
+    """Yield (line_no, tab, kind, value) per line; kind is tab, repo, sort or '' (blank/comment)."""
+    tab = DEFAULT_TAB
+    for i, raw in enumerate(lines):
+        line = raw.split("#")[0].strip()
+        if line.startswith("[") and line.endswith("]"):
+            tab = line[1:-1].strip() or DEFAULT_TAB
+            yield i, tab, "tab", tab
+        elif line.replace(" ", "").startswith("sort="):
+            yield i, tab, "sort", line.split("=", 1)[1].strip()
+        else:
+            yield i, tab, "repo" if line else "", line
+
+
+def parse(lines):
+    """{tab: {"repos": [...], "sort": "mine"}}, tabs in file order, duplicates dropped."""
+    tabs = {}
+    for _, tab, kind, value in entries(lines):
+        if not kind:
+            continue
+        t = tabs.setdefault(tab, {"repos": [], "sort": "mine"})
+        if kind == "repo" and value.lower() not in map(str.lower, t["repos"]):
+            t["repos"].append(value)
+        elif kind == "sort" and value in SORTS:
+            t["sort"] = value
+    return tabs
+
+
+def repo_name(text):
+    """owner/name from `owner/name` or a GitHub link; None if it is neither."""
+    t = re.sub(r"^(https?://)?(www\.)?github\.com/", "", text.strip()).rstrip("/").removesuffix(".git")
+    return t if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", t) else None
+
+
+def tab_name(text):
+    t = text.strip()
+    return t if re.fullmatch(r"[^\[\]#\n]+", t) else None
+
+
+def add_tab(lines, tab):
+    if tab in parse(lines):
+        return lines
+    return lines + (["\n"] if lines else []) + [f"[{tab}]\n"]
+
+
+def add_repo(lines, repo, tab):
+    if repo.lower() in map(str.lower, parse(lines).get(tab, {"repos": []})["repos"]):
+        return lines
+    lines = add_tab(lines, tab)
+    end = [i for i, t, kind, _ in entries(lines) if t == tab and kind][-1]
+    return lines[:end + 1] + [repo + "\n"] + lines[end + 1:]
+
+
+def remove_repo(lines, repo, tab=None):
+    """Drop repo from tab (None = from every tab)."""
+    drop = {i for i, t, kind, v in entries(lines)
+            if kind == "repo" and v.lower() == repo.lower() and tab in (None, t)}
+    return [l for i, l in enumerate(lines) if i not in drop]
+
+
+def remove_tab(lines, tab):
+    drop = {i for i, t, _, _ in entries(lines) if t == tab}
+    return [l for i, l in enumerate(lines) if i not in drop]
+
+
+def move_repo(lines, repo, tab, step):
+    """Swap repo's line with the repo above (step -1) or below (+1) it in the same tab."""
+    rows = [i for i, t, kind, _ in entries(lines) if t == tab and kind == "repo"]
+    names = [lines[i].split("#")[0].strip().lower() for i in rows]
+    if repo.lower() not in names:
+        return lines
+    k = names.index(repo.lower())
+    if not 0 <= k + step < len(rows):
+        return lines
+    a, b = rows[k], rows[k + step]
+    lines = list(lines)
+    lines[a], lines[b] = lines[b], lines[a]
+    return lines
+
+
+def set_sort(lines, tab, sort):
+    drop = {i for i, t, kind, _ in entries(lines) if t == tab and kind == "sort"}
+    lines = add_tab([l for i, l in enumerate(lines) if i not in drop], tab)
+    if sort == "mine":
+        return lines
+    first, _, kind, _ = next(e for e in entries(lines) if e[1] == tab and e[2])
+    at = first + 1 if kind == "tab" else first
+    return lines[:at] + [f"sort = {sort}\n"] + lines[at:]
+
+
+def own_repos():
+    """Your own non-fork, non-archived repos (newest 20): the list when there is no config file."""
     r = subprocess.run(["gh", "repo", "list", "--source", "--no-archived", "--limit", "20",
                         "--json", "nameWithOwner", "--jq", ".[].nameWithOwner"],
                        capture_output=True, text=True, timeout=60)
     return r.stdout.split()
 
 
-REPOS = load_repos()
+def read_lines():
+    if not os.path.exists(CONFIG):
+        return None
+    with open(CONFIG) as f:
+        return [l + "\n" for l in f.read().splitlines()]
+
+
+def load_tabs():
+    lines = read_lines()
+    return parse(lines) if lines is not None else {DEFAULT_TAB: {"repos": own_repos(), "sort": "mine"}}
+
+
+def edit(change, *args):
+    """Apply change(lines, *args) to the config file; a missing file starts from own_repos()."""
+    lines = read_lines()
+    if lines is None:
+        lines = [r + "\n" for r in own_repos()]
+    lines = change(lines, *args)
+    os.makedirs(os.path.dirname(CONFIG), exist_ok=True)
+    with open(CONFIG + ".tmp", "w") as f:  # temp + rename: a crash never leaves half a file
+        f.writelines(lines)
+    os.replace(CONFIG + ".tmp", CONFIG)
+
+
+def ordered(repos, sort, results):
+    """repos in the tab's order; stars/forks sort high to low, unknown (not checked yet) last."""
+    if sort == "mine":
+        return list(repos)
+    key = "stars" if sort == "stars" else "forks"
+    return sorted(repos, key=lambda r: -results.get(r, {}).get(key, -1))
+
 
 QUERY = """query($o:String!,$n:String!){ repository(owner:$o,name:$n){
-  url pushedAt
+  url pushedAt stargazerCount forkCount
   defaultBranchRef{ name target{ ... on Commit{ statusCheckRollup{state} } } }
   releases(first:1, orderBy:{field:CREATED_AT, direction:DESC}){ nodes{tagName publishedAt isPrerelease} }
   issues(states:OPEN, first:30, orderBy:{field:CREATED_AT, direction:DESC}){ totalCount nodes{number title createdAt labels(first:3){nodes{name}}} }
@@ -88,15 +213,16 @@ def check(full):
         todo.append(f"{unreleased} commit(s) on {branch} since {rel['tagName']}: release when ready")
     if issues:
         todo.append(f"{r['issues']['totalCount']} open issue(s) to triage")
-    return {"repo": full, "url": r["url"], "pushed": age(r["pushedAt"]), "branch": branch, "ci": ci,
+    return {"repo": full, "url": r["url"], "pushed": age(r["pushedAt"]),
+            "stars": r["stargazerCount"], "forks": r["forkCount"], "branch": branch, "ci": ci,
             "release": rel and {"tag": rel["tagName"], "when": age(rel["publishedAt"]), "pre": rel["isPrerelease"]},
             "unreleased": unreleased, "alerts": alerts, "prs": prs, "issues": issues,
             "issue_total": r["issues"]["totalCount"], "todo": todo or ["nothing to do"]}
 
 
-def check_all():
+def check_all(repos):
     with ThreadPoolExecutor(8) as ex:
-        return list(ex.map(check, REPOS))
+        return dict(zip(repos, ex.map(check, repos)))
 
 
 def summary_lines(s):
@@ -104,7 +230,8 @@ def summary_lines(s):
         return [f"ERROR: {s['error']}"]
     rel = s["release"]
     rel_txt = f"{rel['tag']}{' (pre-release)' if rel['pre'] else ''}, {rel['when']}" if rel else "no releases"
-    out = [f"release: {rel_txt}   |   {s['branch']} CI: {s['ci'].lower()}   |   last push {s['pushed']}"]
+    out = [f"release: {rel_txt}   |   {s['branch']} CI: {s['ci'].lower()}   |   last push {s['pushed']}"
+           f"   |   ★ {s['stars']}  forks {s['forks']}"]
     for p in s["prs"]:
         out.append(f"PR #{p['n']} {p['title']}  [{'draft, ' if p['draft'] else ''}checks {p['ci'].lower()}, by {p['by']}]")
     for i in s["issues"]:
@@ -121,13 +248,20 @@ def light(s):
     return "green" if s["todo"] == ["nothing to do"] else "orange"
 
 
-def text_mode():
-    for s in check_all():
-        print(f"\n== {s['repo']}  [{light(s)}]")
-        for line in summary_lines(s):
-            print("   " + line)
-        for t in s["todo"]:
-            print("   TODO: " + t)
+def text_mode(only=None):
+    tabs = load_tabs()
+    results = check_all(list(dict.fromkeys(r for t in tabs.values() for r in t["repos"])))
+    for name, tab in tabs.items():
+        if only and name != only:
+            continue
+        print(f"\n##### {name}")
+        for repo in ordered(tab["repos"], tab["sort"], results):
+            s = results[repo]
+            print(f"\n== {s['repo']}  [{light(s)}]")
+            for line in summary_lines(s):
+                print("   " + line)
+            for t in s["todo"]:
+                print("   TODO: " + t)
 
 
 def gui_mode():
@@ -136,58 +270,167 @@ def gui_mode():
     gi.require_version("Gtk", "4.0")
     from gi.repository import GLib, Gtk
 
-    colours = {"red": "#e5534b", "orange": "#d29922", "green": "#57ab5a"}
+    colours = {"red": "#e5534b", "orange": "#d29922", "green": "#57ab5a", "grey": "#768390"}
+    rank = ["grey", "green", "orange", "red"]
+    sort_labels = ["My order", "Stars", "Forks"]
 
     def esc(t):
         return GLib.markup_escape_text(t)
 
     def on_activate(app):
+        results = {}   # repo -> check() result; cleared by Refresh
+        busy = set()   # repos being checked right now
+        stamp = [""]
         win = Gtk.ApplicationWindow(application=app, title="Repo Status", default_width=900, default_height=760)
         header = Gtk.HeaderBar()
         btn = Gtk.Button(label="Refresh")
         header.pack_start(btn)
+        new_tab = Gtk.Entry(placeholder_text="Tab name")
+        new_tab_btn = Gtk.MenuButton(label="New tab", popover=Gtk.Popover(child=new_tab))
+        header.pack_end(new_tab_btn)
         win.set_titlebar(header)
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14, margin_top=14, margin_bottom=14,
-                      margin_start=16, margin_end=16)
-        scroll = Gtk.ScrolledWindow(child=box)
-        win.set_child(scroll)
+        status = Gtk.Label(xalign=0, margin_start=16, margin_top=8)
+        book = Gtk.Notebook(scrollable=True, vexpand=True)
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        outer.append(status)
+        outer.append(book)
+        win.set_child(outer)
 
         def label(markup, **kw):
             lb = Gtk.Label(xalign=0, wrap=True, selectable=True, **kw)
             lb.set_markup(markup)
             return lb
 
-        def show(results):
-            while (c := box.get_first_child()):
-                box.remove(c)
-            stamp = datetime.now().strftime("%H:%M")
-            box.append(label(f"<small>checked {stamp} — {len(results)} repos</small>"))
-            for s in results:
-                frame = Gtk.Frame()
-                inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, margin_top=8, margin_bottom=8,
-                                margin_start=10, margin_end=10)
-                frame.set_child(inner)
-                link = f"<a href='{esc(s.get('url', ''))}'>{esc(s['repo'])}</a>" if s.get("url") else esc(s["repo"])
-                inner.append(label(f"<span foreground='{colours[light(s)]}' size='large'>●</span> <b>{link}</b>"))
-                lines = summary_lines(s)
-                inner.append(label(f"<small>{esc(lines[0])}</small>"))
-                for line in lines[1:]:
-                    inner.append(label("   " + esc(line)))
-                for t in s["todo"]:
-                    inner.append(label(f"<b>→ {esc(t)}</b>"))
-                box.append(frame)
-            btn.set_sensitive(True)
-            return False
+        def later(fn, *args):
+            """Run an edit, then redraw, outside the signal of the widget the redraw destroys."""
+            def run():
+                if fn:
+                    edit(fn, *args)
+                render()
+                return False
+            GLib.idle_add(run)
+
+        def card(repo, tab_name, tab, pos, count):
+            s = results.get(repo)
+            frame = Gtk.Frame()
+            inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, margin_top=8, margin_bottom=8,
+                            margin_start=10, margin_end=10)
+            frame.set_child(inner)
+            top = Gtk.Box(spacing=4)
+            link = f"<a href='{esc(s['url'])}'>{esc(repo)}</a>" if s and s.get("url") else esc(repo)
+            dot = colours[light(s)] if s else colours["grey"]
+            top.append(label(f"<span foreground='{dot}' size='large'>●</span> <b>{link}</b>", hexpand=True))
+            for text, tip, step in (("▲", "Move up", -1), ("▼", "Move down", 1)):
+                b = Gtk.Button(label=text, tooltip_text=tip, has_frame=False)
+                # own order only: under stars/forks the position comes from the numbers
+                b.set_sensitive(tab["sort"] == "mine" and 0 <= pos + step < count)
+                b.connect("clicked", lambda _b, st=step: later(move_repo, repo, tab_name, st))
+                top.append(b)
+            rm = Gtk.Button(label="✕", tooltip_text="Remove from this tab", has_frame=False)
+            rm.connect("clicked", lambda _b: later(remove_repo, repo, tab_name))
+            top.append(rm)
+            inner.append(top)
+            if not s:
+                inner.append(label("<small>checking GitHub…</small>"))
+                return frame
+            lines = summary_lines(s)
+            inner.append(label(f"<small>{esc(lines[0])}</small>"))
+            for line in lines[1:]:
+                inner.append(label("   " + esc(line)))
+            for t in s["todo"]:
+                inner.append(label(f"<b>→ {esc(t)}</b>"))
+            return frame
+
+        def page(tab_name, tab):
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin_top=10, margin_bottom=10,
+                          margin_start=16, margin_end=16)
+            bar = Gtk.Box(spacing=6)
+            entry = Gtk.Entry(placeholder_text="owner/name or GitHub link", hexpand=True)
+            add = Gtk.Button(label="Add repo")
+            sort = Gtk.DropDown.new_from_strings(sort_labels)
+            sort.set_selected(SORTS.index(tab["sort"]))
+            sort.set_tooltip_text("Order of this tab")
+            drop_tab = Gtk.Button(label="Remove tab")
+            for w in (entry, add, sort, drop_tab):
+                bar.append(w)
+            box.append(bar)
+            msg = Gtk.Label(xalign=0, visible=False)
+            box.append(msg)
+
+            def on_add(*_):
+                name = repo_name(entry.get_text())
+                if not name:
+                    msg.set_visible(True)
+                    msg.set_markup(f"<span foreground='{colours['red']}'>Type owner/name, e.g. cli/cli, "
+                                   "or paste a GitHub link</span>")
+                    return
+                later(add_repo, name, tab_name)
+
+            def on_drop_tab(*_):
+                ask = Gtk.AlertDialog(message=f"Remove the tab “{tab_name}”?",
+                                      detail=f"Its {len(tab['repos'])} repo(s) leave the list. "
+                                             "Nothing changes on GitHub.",
+                                      buttons=["Cancel", "Remove"], cancel_button=0, default_button=0)
+                ask.choose(win, None, lambda d, res: d.choose_finish(res) == 1 and later(remove_tab, tab_name))
+
+            entry.connect("activate", on_add)
+            add.connect("clicked", on_add)
+            sort.connect("notify::selected", lambda d, _p: later(set_sort, tab_name, SORTS[d.get_selected()]))
+            drop_tab.connect("clicked", on_drop_tab)
+            cards = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+            repos = ordered(tab["repos"], tab["sort"], results)
+            for pos, repo in enumerate(repos):
+                cards.append(card(repo, tab_name, tab, pos, len(repos)))
+            if not repos:
+                cards.append(label("No repos in this tab yet. Add one above."))
+            box.append(Gtk.ScrolledWindow(child=cards, vexpand=True))
+            worst = max((light(results[r]) if r in results else "grey" for r in repos), key=rank.index,
+                        default="grey")
+            tab_label = Gtk.Label()
+            tab_label.set_markup(f"<span foreground='{colours[worst]}'>●</span> {esc(tab_name)}")
+            return box, tab_label
+
+        def render():
+            current = book.get_current_page()
+            while book.get_n_pages():
+                book.remove_page(-1)
+            tabs = load_tabs()
+            for name, tab in tabs.items():
+                book.append_page(*page(name, tab))
+            book.set_current_page(min(max(current, 0), book.get_n_pages() - 1))
+            repos = list(dict.fromkeys(r for t in tabs.values() for r in t["repos"]))
+            todo = [r for r in repos if r not in results and r not in busy]
+            status.set_markup(f"<small>{'checking GitHub… ' if busy or todo else ''}"
+                              f"{'checked ' + stamp[0] + ' — ' if stamp[0] else ''}"
+                              f"{len(repos)} repos in {len(tabs)} tab(s)</small>")
+            btn.set_sensitive(not (busy or todo))
+            if todo:
+                busy.update(todo)
+
+                def done(found):
+                    results.update(found)
+                    busy.difference_update(found)
+                    stamp[0] = datetime.now().strftime("%H:%M")
+                    render()
+                    return False
+                threading.Thread(target=lambda: GLib.idle_add(done, check_all(todo)), daemon=True).start()
 
         def refresh(*_):
-            btn.set_sensitive(False)
-            while (c := box.get_first_child()):
-                box.remove(c)
-            box.append(label("checking GitHub…"))
-            threading.Thread(target=lambda: GLib.idle_add(show, check_all()), daemon=True).start()
+            results.clear()
+            render()
+
+        def on_new_tab(*_):
+            name = tab_name(new_tab.get_text())
+            if name:
+                new_tab.set_text("")
+                new_tab_btn.popdown()
+                edit(add_tab, name)
+                render()
+                book.set_current_page(list(load_tabs()).index(name))
 
         btn.connect("clicked", refresh)
-        refresh()
+        new_tab.connect("activate", on_new_tab)
+        render()
         win.present()
 
     app = Gtk.Application(application_id="io.github.ludalunizz.SlashRepo")
@@ -195,5 +438,41 @@ def gui_mode():
     app.run([])
 
 
+USAGE = """usage:
+  repo-status                         open the window
+  repo-status --text [TAB]            print the report (all tabs, or one)
+  repo-status --tabs                  list the tabs and their repos
+  repo-status --add OWNER/NAME [TAB]  add a repo (default tab: My repos; a new tab name makes the tab)
+  repo-status --remove OWNER/NAME [TAB]   remove a repo (from every tab, or one)
+  repo-status --remove-tab TAB        remove a tab and its repos from the list
+  repo-status --sort TAB mine|stars|forks   order of a tab
+The list lives in ~/.config/slashrepo/repos; you may also edit it by hand."""
+
+
+def main(argv):
+    cmd, args = (argv[0], argv[1:]) if argv else (None, [])
+    if cmd is None:
+        return gui_mode()
+    if cmd == "--text" and len(args) <= 1:
+        return text_mode(*args)
+    if cmd == "--tabs" and not args:
+        for name, tab in load_tabs().items():
+            print(f"[{name}]" + (f"  sort = {tab['sort']}" if tab["sort"] != "mine" else ""))
+            for r in tab["repos"]:
+                print("  " + r)
+        return
+    if cmd in ("--add", "--remove") and 1 <= len(args) <= 2:
+        repo = repo_name(args[0])
+        tab = tab_name(args[1]) if len(args) == 2 else (DEFAULT_TAB if cmd == "--add" else None)
+        if not repo or (len(args) == 2 and not tab):
+            sys.exit("not a repo (owner/name or GitHub link) or not a tab name (no [ ] #)")
+        return edit(add_repo, repo, tab) if cmd == "--add" else edit(remove_repo, repo, tab)
+    if cmd == "--remove-tab" and len(args) == 1:
+        return edit(remove_tab, args[0].strip())
+    if cmd == "--sort" and len(args) == 2 and args[1] in SORTS and tab_name(args[0]):
+        return edit(set_sort, tab_name(args[0]), args[1])
+    sys.exit(USAGE)
+
+
 if __name__ == "__main__":
-    text_mode() if "--text" in sys.argv else gui_mode()
+    main(sys.argv[1:])
