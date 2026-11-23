@@ -1,6 +1,6 @@
 # slashRepo
 
-**Type `/repo`. Your repos show up, from GitHub and GitLab. The AI spends zero tokens on it.**
+**Type `/repo`. Your repos show up, from GitHub, GitLab and Codeberg. The AI spends zero tokens on it.**
 
 ![The flow: /repo, a hook, a script, a window, and 0 tokens for the info](docs/flow.svg)
 
@@ -74,21 +74,26 @@ repo-status --tabs                      # list it all
 No file yet? Then you get one tab with your own non-fork, non-archived repos (`gh repo list`, newest 20).
 The first change you make writes those to the file, so they stay.
 
-## GitLab
+## GitLab and Codeberg
 
-GitLab projects sit in the same tabs. Write them with their host, or paste the link:
+GitLab projects and Codeberg repos sit in the same tabs. Write them with their host, or paste the link:
 
 ```ini
 [Friends]
 a-friend/cool-lib                 # GitHub
 gitlab.com/gitlab-org/cli         # GitLab
 gitlab.com/group/subgroup/project
+codeberg.org/forgejo/forgejo      # Codeberg
 ```
 
 Public projects need no login. For private ones set `GITLAB_TOKEN` (a read-only token is enough). A
 self-hosted GitLab works too (`git.example.org/team/app`); set `GITLAB_HOST=git.example.org` if its
 projects need the token. The token is only ever sent to that one host. GitLab shows merge requests
-(`MR !12`) and pipelines where GitHub shows PRs and checks; it has no Dependabot alerts here.
+(`MR !12`) and pipelines where GitHub shows PRs and checks.
+
+Codeberg works the same way: public repos need no login, `CODEBERG_TOKEN` for private ones (sent
+only to codeberg.org). Self-hosted Forgejo or Gitea servers are not supported yet.
+GitLab and Codeberg have no Dependabot alerts here.
 
 ## Use
 

@@ -63,6 +63,8 @@ for bad in ("cli", "a/b/c", "a b/c", "--x", "a/b;rm"):
 assert rs.repo_name("https://gitlab.com/gitlab-org/cli.git") == "gitlab.com/gitlab-org/cli"
 assert rs.repo_name("gitlab.com/group/sub/project") == "gitlab.com/group/sub/project"
 assert rs.repo_name("https://git.example.org/team/app/") == "git.example.org/team/app"
+assert rs.repo_name("https://codeberg.org/forgejo/forgejo.git") == "codeberg.org/forgejo/forgejo"
+assert rs.repo_name("codeberg.org/a/b/c") is None  # Codeberg has no subgroups
 for bad in ("gitlab.com/onlygroup", "https://gitlab.com/a/b/-/issues", "gitlab.com/a b/c"):
     assert rs.repo_name(bad) is None, bad
 assert rs.tab_name("  ArtCraft ") == "ArtCraft" and rs.tab_name("a]b") is None and rs.tab_name("") is None
@@ -114,5 +116,37 @@ sent.clear()
 rs.check("git.example.org/g/p")
 assert sent and all(auth is None for _, auth in sent), sent
 os.environ.pop("GITLAB_TOKEN")
+
+# Codeberg: same card; CODEBERG_TOKEN goes to codeberg.org only (and never to GitLab hosts).
+class CbResp(Resp):
+    def __init__(self, data, total=None):
+        super().__init__(data)
+        self.headers = {"X-Total-Count": total} if total else {}
+def cb_urlopen(req, timeout):
+    sent.append((req.full_url, req.get_header("Authorization")))
+    u = req.full_url.split("/api/v1/repos/o/r", 1)[1]
+    if u == "":
+        return CbResp({"html_url": "https://codeberg.org/o/r", "updated_at": "2026-01-01T00:00:00+01:00",
+                       "stars_count": 3, "forks_count": 1, "default_branch": "main"})
+    if u.startswith("/releases"):
+        return CbResp([{"tag_name": "v2", "published_at": "2026-01-01T00:00:00+01:00", "prerelease": False}])
+    if u.startswith("/commits?sha=main&not=v2"):
+        return CbResp([{}], total="4")
+    if u.startswith("/issues"):
+        return CbResp([{"number": 5, "title": "bug", "created_at": "2026-01-01T00:00:00+01:00",
+                        "labels": [{"name": "bug"}]}], total="12")
+    if u.startswith("/pulls"):
+        return CbResp([{"number": 6, "title": "fix", "draft": False, "user": {"login": "x"}, "head": {"sha": "abc"}}])
+    if u == "/commits/abc/status":
+        return CbResp({"state": "failure"})
+    return CbResp({"state": "success"})  # the default branch
+rs.urllib.request.urlopen = cb_urlopen
+os.environ.update(CODEBERG_TOKEN="cb", GITLAB_TOKEN="gl")
+sent.clear()
+card = rs.check("codeberg.org/o/r")
+assert card["ci"] == "SUCCESS" and card["stars"] == 3 and card["issue_total"] == 12 and card["unreleased"] == 4, card
+assert "PR #6 has failing checks" in card["todo"] and "12 open issue(s) to triage" in card["todo"], card["todo"]
+assert sent and all(auth == "token cb" for _, auth in sent), sent
+os.environ.pop("CODEBERG_TOKEN"); os.environ.pop("GITLAB_TOKEN")
 
 print("config tests ok")
