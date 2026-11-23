@@ -20,11 +20,12 @@ Categories=Development;
 DESK
 
 [ -f "$settings" ] || echo '{}' > "$settings"
-cp "$settings" "$settings.bak-slashrepo"
+[ -e "$settings.bak-slashrepo" ] || cp "$settings" "$settings.bak-slashrepo"
 hook="$HOME/.local/bin/repo-status-hook"
+# Write to a temp file first: a jq failure must not leave settings.json empty.
 jq --arg c "$hook" '
   .hooks.UserPromptSubmit = ((.hooks.UserPromptSubmit // [])
-    | if any(.hooks[]?; .command == $c) then . else . + [{hooks: [{type: "command", command: $c, timeout: 5}]}] end)
-' "$settings.bak-slashrepo" > "$settings"
+    | if any(.[]; .hooks[]?.command == $c) then . else . + [{hooks: [{type: "command", command: $c, timeout: 5}]}] end)
+' "$settings" > "$settings.new" && mv "$settings.new" "$settings"
 echo "installed. Settings backup: $settings.bak-slashrepo"
 echo "Optional: list repos one owner/name per line in ~/.config/slashrepo/repos"
