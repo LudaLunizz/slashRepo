@@ -4,6 +4,12 @@
 # Needs: python3 with PyGObject (GTK4) for the window, gh (logged in) for GitHub repos, jq for Claude Code.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
+# --trigger FILE: also install a systemd user unit that opens the window when FILE is written
+# (for agents in a sandbox, see the README). FILE must be a path the sandbox can write.
+trigger=""
+if [ "${1:-}" = "--trigger" ]; then
+  case "${2:-}" in /*) trigger=$2 ;; *) echo "usage: $0 [--trigger /absolute/path/to/file]" >&2; exit 1 ;; esac
+fi
 for c in gh python3; do command -v "$c" >/dev/null || { echo "missing: $c" >&2; exit 1; }; done
 has() { command -v "$1" >/dev/null 2>&1; }
 
@@ -60,6 +66,19 @@ fi
 if [ -d "$HOME/.gemini/antigravity" ] || [ -d "$HOME/.gemini/config" ] || has agy; then
   skill "$HOME/.gemini/config/skills"
   echo "Antigravity: /repo"
+fi
+
+if [ -n "$trigger" ]; then
+  units="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+  mkdir -p "$units" "$(dirname "$trigger")"
+  [ -e "$trigger" ] || : > "$trigger"
+  install -m 644 "$here/systemd/slashrepo-trigger.service" "$units/"
+  # | as sed delimiter: the path has slashes; refuse paths with | or newlines
+  case "$trigger" in *"|"*|*"
+"*) echo "trigger path may not contain | or a newline" >&2; exit 1 ;; esac
+  sed "s|@TRIGGER@|$trigger|" "$here/systemd/slashrepo-trigger.path" > "$units/slashrepo-trigger.path"
+  systemctl --user daemon-reload && systemctl --user enable --now slashrepo-trigger.path
+  echo "trigger: writing $trigger opens the window (set SLASHREPO_TRIGGER=$trigger inside the sandbox)"
 fi
 
 echo "Optional: list repos in ~/.config/slashrepo/repos (see the README)"
