@@ -109,10 +109,21 @@ GitLab and Codeberg have no Dependabot alerts here.
 | Antigravity | `/repo` | a `repo` skill: the agent runs one command | 0 (a few for that one command) |
 
 Codex and Antigravity have no hook that fits, and they replaced custom commands with skills, so there
-the agent itself runs `repo-status` once. It never reads the report. If your agent runs commands in a
-sandbox without network or without your desktop, the window cannot open from there: allow that one
-command outside the sandbox, or open `repo-status` from the app menu. opencode and Gemini CLI say so
-in one line when they cannot reach it.
+the agent itself runs `repo-status` once. It never reads the report. opencode and Gemini CLI say so in
+one line when they cannot reach the window.
+
+### Agents in a sandbox
+
+If your agent runs in a sandbox that cannot see `repo-status`, `gh` or your GitHub login (good!), let
+`/repo` write a trigger file instead, and a systemd user unit outside the sandbox opens the window:
+
+```sh
+./install.sh --trigger ~/agent-sandbox/.slashrepo-open   # any file the sandbox can write
+```
+
+Then give the sandbox `SLASHREPO_TRIGGER=~/agent-sandbox/.slashrepo-open` (full path), for example
+`--setenv SLASHREPO_TRIGGER ...` in bubblewrap. The sandbox gets nothing else: writing the file is all
+it can do, and that only opens the read-only window. Works for the opencode and Gemini CLI commands.
 
 ## Use
 

@@ -1,0 +1,6 @@
+[Unit]
+Description=slashRepo: Repo Status window (started by the trigger file)
+
+[Service]
+Type=exec
+ExecStart=%h/.local/bin/repo-status

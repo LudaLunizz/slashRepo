@@ -11,6 +11,7 @@ commands; the [README](README.md) says what slashRepo does.
 | `bin/repo-status-hook` | the Claude Code `UserPromptSubmit` hook that opens it |
 | `commands/repo.md` | the `/repo` command for Claude Code |
 | `commands/opencode/`, `commands/gemini/` | `/repo` for opencode and Gemini CLI |
+| `systemd/` | the trigger unit for agents in a sandbox (`install.sh --trigger FILE`) |
 | `skills/repo/SKILL.md` | the `repo` skill for Codex and Antigravity |
 | `install.sh` | copies all of it into place for the agents it finds, adds the Claude Code hook |
 | `tests/install_test.sh` | the installer in a throwaway HOME: which agent gets what |

@@ -1,0 +1,11 @@
+# Opens the Repo Status window when a sandboxed agent writes the trigger file (see README,
+# "Agents in a sandbox"). install.sh --trigger FILE fills in the path.
+[Unit]
+Description=slashRepo: open Repo Status when the trigger file is written
+
+[Path]
+PathModified=@TRIGGER@
+Unit=slashrepo-trigger.service
+
+[Install]
+WantedBy=default.target
