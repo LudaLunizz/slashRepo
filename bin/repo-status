@@ -8,6 +8,8 @@ import json
 import os
 import re
 import subprocess
+import urllib.parse
+import urllib.request
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -50,9 +52,16 @@ def parse(lines):
 
 
 def repo_name(text):
-    """owner/name from `owner/name` or a GitHub link; None if it is neither."""
-    t = re.sub(r"^(https?://)?(www\.)?github\.com/", "", text.strip()).rstrip("/").removesuffix(".git")
-    return t if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", t) else None
+    """owner/name for GitHub (name or link); host/group/project for GitLab (gitlab.com/... or a link).
+    None if it is neither."""
+    t = re.sub(r"^https?://", "", text.strip()).rstrip("/").removesuffix(".git")
+    t = re.sub(r"^(www\.)?github\.com/", "", t, flags=re.I)
+    seg = r"[A-Za-z0-9_.-]+"
+    if re.fullmatch(rf"[A-Za-z0-9-]+/{seg}", t):
+        return t
+    if re.fullmatch(rf"[a-z0-9-]+(\.[a-z0-9-]+)+(/{seg}){{2,}}", t) and "/-/" not in t + "/":
+        return t
+    return None
 
 
 def tab_name(text):
@@ -174,14 +183,10 @@ def age(iso):
     return "today" if d == 0 else f"{d}d ago"
 
 
-def check(full):
+def github(full):
     owner, name = full.split("/")
-    try:
-        r = gh("api", "graphql", "-f", f"query={QUERY}", "-F", f"o={owner}", "-F", f"n={name}")["data"]["repository"]
-    except Exception as e:  # one broken repo must not hide the others
-        return {"repo": full, "error": str(e), "todo": ["gh call failed: check `gh auth status`"]}
+    r = gh("api", "graphql", "-f", f"query={QUERY}", "-F", f"o={owner}", "-F", f"n={name}")["data"]["repository"]
     branch = r["defaultBranchRef"]["name"]
-    ci = ((r["defaultBranchRef"]["target"] or {}).get("statusCheckRollup") or {}).get("state", "NONE")
     rel = (r["releases"]["nodes"] or [None])[0]
     unreleased = None
     if rel:
@@ -189,35 +194,104 @@ def check(full):
             unreleased = gh("api", f"repos/{full}/compare/{rel['tagName']}...{branch}")["ahead_by"]
         except Exception:
             pass
-    prs = [{"n": p["number"], "title": p["title"], "draft": p["isDraft"], "by": p["author"]["login"] if p["author"] else "?",
-            "review": p["reviewDecision"],
-            "ci": ((p["commits"]["nodes"] or [{}])[0].get("commit", {}).get("statusCheckRollup") or {}).get("state", "NONE")}
-           for p in r["pullRequests"]["nodes"]]
-    issues = [{"n": i["number"], "title": i["title"], "age": age(i["createdAt"]),
-               "labels": [l["name"] for l in i["labels"]["nodes"]]} for i in r["issues"]["nodes"]]
-    alerts = r["vulnerabilityAlerts"]["totalCount"]
+    return {"url": r["url"], "pushed": r["pushedAt"], "stars": r["stargazerCount"], "forks": r["forkCount"],
+            "branch": branch, "pr": "PR #", "unreleased": unreleased,
+            "ci": ((r["defaultBranchRef"]["target"] or {}).get("statusCheckRollup") or {}).get("state", "NONE"),
+            "release": rel and {"tag": rel["tagName"], "when": rel["publishedAt"], "pre": rel["isPrerelease"]},
+            "prs": [{"n": p["number"], "title": p["title"], "draft": p["isDraft"],
+                     "by": p["author"]["login"] if p["author"] else "?",
+                     "ci": ((p["commits"]["nodes"] or [{}])[0].get("commit", {}).get("statusCheckRollup") or {})
+                     .get("state", "NONE")} for p in r["pullRequests"]["nodes"]],
+            "issues": [{"n": i["number"], "title": i["title"], "created": i["createdAt"],
+                        "labels": [l["name"] for l in i["labels"]["nodes"]]} for i in r["issues"]["nodes"]],
+            "issue_total": r["issues"]["totalCount"], "alerts": r["vulnerabilityAlerts"]["totalCount"]}
 
-    todo = []
-    if ci in ("FAILURE", "ERROR"):
+
+GITLAB_QUERY = """query($p:ID!){ project(fullPath:$p){
+  webUrl lastActivityAt starCount forksCount repository{rootRef}
+  releases(first:1, sort:RELEASED_AT_DESC){ nodes{tagName releasedAt upcomingRelease} }
+  issues(state:opened, first:30, sort:CREATED_DESC){ count nodes{iid title createdAt labels(first:3){nodes{title}}} }
+  mergeRequests(state:opened, first:30){ nodes{iid title draft author{username} headPipeline{status}} }
+}}"""
+# GitLab pipeline states -> the GitHub words the rest of the script uses
+PIPELINE = {"success": "SUCCESS", "failed": "FAILURE", "running": "PENDING", "pending": "PENDING",
+            "created": "PENDING", "preparing": "PENDING", "waiting_for_resource": "PENDING"}
+
+
+def gitlab_api(host, path, body=None):
+    """GET (or POST json) https://host/api/...; public projects need no login. GITLAB_TOKEN is only
+    sent to GITLAB_HOST (default gitlab.com), never to other hosts in the list."""
+    req = urllib.request.Request(f"https://{host}/api/{path}", data=body and json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"})
+    token = os.environ.get("GITLAB_TOKEN")
+    if token and host == os.environ.get("GITLAB_HOST", "gitlab.com").removeprefix("https://").rstrip("/"):
+        req.add_header("Authorization", f"Bearer {token}")
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        return json.load(resp)
+
+
+def gitlab(full):
+    host, path = full.split("/", 1)
+    got = gitlab_api(host, "graphql", {"query": GITLAB_QUERY, "variables": {"p": path}})
+    r = (got.get("data") or {}).get("project")
+    if not r:
+        raise RuntimeError("; ".join(e.get("message", "") for e in got.get("errors", [])) or "project not found "
+                           "(private? set GITLAB_TOKEN)")
+    branch = (r["repository"] or {}).get("rootRef") or "main"
+    pid = urllib.parse.quote(path, safe="")
+    runs = gitlab_api(host, f"v4/projects/{pid}/pipelines?ref={urllib.parse.quote(branch)}&per_page=1")
+    rel = (r["releases"]["nodes"] or [None])[0]
+    unreleased = None
+    if rel:
+        try:
+            cmp = gitlab_api(host, f"v4/projects/{pid}/repository/compare?straight=true"
+                                   f"&from={urllib.parse.quote(rel['tagName'])}&to={urllib.parse.quote(branch)}")
+            unreleased = len(cmp["commits"])
+        except Exception:
+            pass
+    return {"url": r["webUrl"], "pushed": r["lastActivityAt"], "stars": r["starCount"], "forks": r["forksCount"],
+            "branch": branch, "pr": "MR !", "unreleased": unreleased,
+            "ci": PIPELINE.get(runs[0]["status"], "NONE") if runs else "NONE",
+            "release": rel and {"tag": rel["tagName"], "when": rel["releasedAt"], "pre": rel["upcomingRelease"]},
+            "prs": [{"n": m["iid"], "title": m["title"], "draft": m["draft"],
+                     "by": (m["author"] or {}).get("username", "?"),
+                     "ci": PIPELINE.get(((m["headPipeline"] or {}).get("status") or "").lower(), "NONE")}
+                    for m in r["mergeRequests"]["nodes"]],
+            "issues": [{"n": i["iid"], "title": i["title"], "created": i["createdAt"],
+                        "labels": [l["title"] for l in i["labels"]["nodes"]]} for i in r["issues"]["nodes"]],
+            "issue_total": r["issues"]["count"], "alerts": 0}
+
+
+def check(full):
+    on_gitlab = "." in full.split("/")[0]  # GitHub owners have no dots, hosts do
+    try:
+        d = (gitlab if on_gitlab else github)(full)
+    except Exception as e:  # one broken repo must not hide the others
+        hint = "GitLab call failed: check the name, or GITLAB_TOKEN for a private project" if on_gitlab \
+            else "gh call failed: check `gh auth status`"
+        return {"repo": full, "error": str(e), "todo": [hint]}
+    d["pushed"] = age(d["pushed"])
+    if d["release"]:
+        d["release"]["when"] = age(d["release"]["when"])
+    for i in d["issues"]:
+        i["age"] = age(i.pop("created"))
+    branch, rel, todo = d["branch"], d["release"], []
+    if d["ci"] in ("FAILURE", "ERROR"):
         todo.append(f"CI is red on {branch}: fix first")
-    if alerts:
-        todo.append(f"{alerts} open Dependabot security alert(s)")
-    for p in prs:
+    if d["alerts"]:
+        todo.append(f"{d['alerts']} open Dependabot security alert(s)")
+    for p in d["prs"]:
         if p["draft"]:
             continue
         if p["ci"] in ("FAILURE", "ERROR"):
-            todo.append(f"PR #{p['n']} has failing checks")
+            todo.append(f"{d['pr']}{p['n']} has failing checks")
         elif p["ci"] in ("SUCCESS", "NONE"):
-            todo.append(f"PR #{p['n']} is green: review / merge")
-    if unreleased:
-        todo.append(f"{unreleased} commit(s) on {branch} since {rel['tagName']}: release when ready")
-    if issues:
-        todo.append(f"{r['issues']['totalCount']} open issue(s) to triage")
-    return {"repo": full, "url": r["url"], "pushed": age(r["pushedAt"]),
-            "stars": r["stargazerCount"], "forks": r["forkCount"], "branch": branch, "ci": ci,
-            "release": rel and {"tag": rel["tagName"], "when": age(rel["publishedAt"]), "pre": rel["isPrerelease"]},
-            "unreleased": unreleased, "alerts": alerts, "prs": prs, "issues": issues,
-            "issue_total": r["issues"]["totalCount"], "todo": todo or ["nothing to do"]}
+            todo.append(f"{d['pr']}{p['n']} is green: review / merge")
+    if d["unreleased"]:
+        todo.append(f"{d['unreleased']} commit(s) on {branch} since {rel['tag']}: release when ready")
+    if d["issues"]:
+        todo.append(f"{d['issue_total']} open issue(s) to triage")
+    return {"repo": full, **d, "todo": todo or ["nothing to do"]}
 
 
 def check_all(repos):
@@ -233,7 +307,7 @@ def summary_lines(s):
     out = [f"release: {rel_txt}   |   {s['branch']} CI: {s['ci'].lower()}   |   last push {s['pushed']}"
            f"   |   ★ {s['stars']}  forks {s['forks']}"]
     for p in s["prs"]:
-        out.append(f"PR #{p['n']} {p['title']}  [{'draft, ' if p['draft'] else ''}checks {p['ci'].lower()}, by {p['by']}]")
+        out.append(f"{s['pr']}{p['n']} {p['title']}  [{'draft, ' if p['draft'] else ''}checks {p['ci'].lower()}, by {p['by']}]")
     for i in s["issues"]:
         lab = f" [{', '.join(i['labels'])}]" if i["labels"] else ""
         out.append(f"issue #{i['n']} {i['title']}  ({i['age']}){lab}")
@@ -345,7 +419,7 @@ def gui_mode():
             box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin_top=10, margin_bottom=10,
                           margin_start=16, margin_end=16)
             bar = Gtk.Box(spacing=6)
-            entry = Gtk.Entry(placeholder_text="owner/name or GitHub link", hexpand=True)
+            entry = Gtk.Entry(placeholder_text="owner/name, or a GitHub or GitLab link", hexpand=True)
             add = Gtk.Button(label="Add repo")
             sort = Gtk.DropDown.new_from_strings(sort_labels)
             sort.set_selected(SORTS.index(tab["sort"]))
@@ -361,8 +435,8 @@ def gui_mode():
                 name = repo_name(entry.get_text())
                 if not name:
                     msg.set_visible(True)
-                    msg.set_markup(f"<span foreground='{colours['red']}'>Type owner/name, e.g. cli/cli, "
-                                   "or paste a GitHub link</span>")
+                    msg.set_markup(f"<span foreground='{colours['red']}'>Type owner/name (GitHub), gitlab.com/group/project, "
+                                   "or paste a GitHub or GitLab link</span>")
                     return
                 later(add_repo, name, tab_name)
 

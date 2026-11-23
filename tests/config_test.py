@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Tabs file: parsing and every edit the window and the --add/--remove/--sort flags make."""
+import json
 import os
 import subprocess
 import sys
 import tempfile
+sys.dont_write_bytecode = True  # importing bin/repo-status must not leave a cache file in bin/
 from pathlib import Path
 import importlib.util
 from importlib.machinery import SourceFileLoader
@@ -58,6 +60,11 @@ assert rs.repo_name("https://github.com/storytold/pdfcraft.git/") == "storytold/
 assert rs.repo_name(" cli/cli ") == "cli/cli"
 for bad in ("cli", "a/b/c", "a b/c", "--x", "a/b;rm"):
     assert rs.repo_name(bad) is None, bad
+assert rs.repo_name("https://gitlab.com/gitlab-org/cli.git") == "gitlab.com/gitlab-org/cli"
+assert rs.repo_name("gitlab.com/group/sub/project") == "gitlab.com/group/sub/project"
+assert rs.repo_name("https://git.example.org/team/app/") == "git.example.org/team/app"
+for bad in ("gitlab.com/onlygroup", "https://gitlab.com/a/b/-/issues", "gitlab.com/a b/c"):
+    assert rs.repo_name(bad) is None, bad
 assert rs.tab_name("  ArtCraft ") == "ArtCraft" and rs.tab_name("a]b") is None and rs.tab_name("") is None
 
 # The flags write the real file (a temporary HOME here).
@@ -73,5 +80,39 @@ with tempfile.TemporaryDirectory() as home:
     assert Path(cfg).read_text() == "me/a\n\n[ArtCraft]\nsort = stars\nst/x\n", Path(cfg).read_text()
     assert run("--tabs").stdout == "[My repos]\n  me/a\n[ArtCraft]  sort = stars\n  st/x\n"
     assert run("--remove-tab", "ArtCraft").returncode == 0 and Path(cfg).read_text() == "me/a\n\n"
+
+# GitLab: the token goes only to GITLAB_HOST, and a GitLab project fills the same card as GitHub.
+sent = []
+class Resp:
+    def __init__(self, data): self.data = data
+    def __enter__(self): return self
+    def __exit__(self, *a): pass
+    def read(self): return json.dumps(self.data).encode()
+def fake_urlopen(req, timeout):
+    sent.append((req.full_url, req.get_header("Authorization")))
+    if req.full_url.endswith("/graphql"):
+        return Resp({"data": {"project": {
+            "webUrl": "https://gitlab.com/g/p", "lastActivityAt": "2026-01-01T00:00:00Z", "starCount": 7,
+            "forksCount": 2, "repository": {"rootRef": "main"},
+            "releases": {"nodes": [{"tagName": "v1", "releasedAt": "2026-01-01T00:00:00Z", "upcomingRelease": False}]},
+            "issues": {"count": 1, "nodes": [{"iid": "4", "title": "bug", "createdAt": "2026-01-01T00:00:00Z",
+                                              "labels": {"nodes": [{"title": "bug"}]}}]},
+            "mergeRequests": {"nodes": [{"iid": "9", "title": "fix", "draft": False, "author": {"username": "x"},
+                                         "headPipeline": {"status": "FAILED"}}]}}}})
+    if "/pipelines" in req.full_url:
+        return Resp([{"status": "success"}])
+    return Resp({"commits": [{}, {}]})
+rs.urllib.request.urlopen = fake_urlopen
+os.environ.update(GITLAB_TOKEN="secret")
+os.environ.pop("GITLAB_HOST", None)
+card = rs.check("gitlab.com/g/p")
+assert card["ci"] == "SUCCESS" and card["stars"] == 7 and card["unreleased"] == 2, card
+assert "MR !9 has failing checks" in card["todo"] and "2 commit(s) on main since v1: release when ready" in card["todo"]
+assert rs.summary_lines(card)[1].startswith("MR !9 fix") and rs.light(card) == "orange"
+assert all(auth == "Bearer secret" for _, auth in sent), sent
+sent.clear()
+rs.check("git.example.org/g/p")
+assert sent and all(auth is None for _, auth in sent), sent
+os.environ.pop("GITLAB_TOKEN")
 
 print("config tests ok")
