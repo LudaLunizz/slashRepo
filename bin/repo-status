@@ -52,13 +52,15 @@ def parse(lines):
 
 
 def repo_name(text):
-    """owner/name for GitHub (name or link); host/group/project for GitLab (gitlab.com/... or a link).
-    None if it is neither."""
+    """owner/name for GitHub (name or link); codeberg.org/owner/repo; host/group/project for GitLab
+    (gitlab.com/... or a link). None if it is none of these."""
     t = re.sub(r"^https?://", "", text.strip()).rstrip("/").removesuffix(".git")
     t = re.sub(r"^(www\.)?github\.com/", "", t, flags=re.I)
     seg = r"[A-Za-z0-9_.-]+"
     if re.fullmatch(rf"[A-Za-z0-9-]+/{seg}", t):
         return t
+    if t.startswith(CODEBERG + "/"):
+        return t if re.fullmatch(rf"{re.escape(CODEBERG)}/{seg}/{seg}", t) else None
     if re.fullmatch(rf"[a-z0-9-]+(\.[a-z0-9-]+)+(/{seg}){{2,}}", t) and "/-/" not in t + "/":
         return t
     return None
@@ -262,13 +264,61 @@ def gitlab(full):
             "issue_total": r["issues"]["count"], "alerts": 0}
 
 
+CODEBERG = "codeberg.org"  # shortcut: only Codeberg itself; self-hosted Forgejo/Gitea would need a host list
+
+
+def codeberg_api(path):
+    """GET https://codeberg.org/api/v1/...; returns (json, headers). CODEBERG_TOKEN only goes here."""
+    req = urllib.request.Request(f"https://{CODEBERG}/api/v1/{path}")
+    if os.environ.get("CODEBERG_TOKEN"):
+        req.add_header("Authorization", f"token {os.environ['CODEBERG_TOKEN']}")
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        return json.load(resp), resp.headers
+
+
+def codeberg(full):
+    base = "repos/" + urllib.parse.quote(full.split("/", 1)[1])
+    r, _ = codeberg_api(base)
+    branch = r["default_branch"]
+
+    def ci(ref):  # combined commit status; "" when no CI reports on it
+        state = codeberg_api(f"{base}/commits/{urllib.parse.quote(ref, safe='')}/status")[0].get("state") or ""
+        return {"success": "SUCCESS", "failure": "FAILURE", "error": "ERROR", "pending": "PENDING"}.get(state, "NONE")
+
+    # a repo can switch releases, issues or PRs off; asking anyway gives a 404
+    rels = codeberg_api(f"{base}/releases?limit=1&draft=false")[0] if r.get("has_releases", True) else []
+    rel = (rels or [None])[0]
+    unreleased = None
+    if rel:
+        try:  # count only (compare times out on big repos): commits on branch, not on the tag
+            unreleased = int(codeberg_api(f"{base}/commits?sha={urllib.parse.quote(branch)}"
+                                          f"&not={urllib.parse.quote(rel['tag_name'])}"
+                                          "&limit=1&stat=false&verification=false&files=false")[1]["X-Total-Count"])
+        except Exception:
+            pass
+    issues, head = codeberg_api(f"{base}/issues?state=open&type=issues&limit=30") \
+        if r.get("has_issues", True) else ([], {})
+    pulls = codeberg_api(f"{base}/pulls?state=open&limit=30")[0] if r.get("has_pull_requests", True) else []
+    with ThreadPoolExecutor(4) as ex:  # the list has no check state: one small call per PR, 4 at a time
+        pr_ci = list(ex.map(lambda p: "NONE" if p.get("draft") else ci(p["head"]["sha"]), pulls))
+    return {"url": r["html_url"], "pushed": r["updated_at"], "stars": r["stars_count"], "forks": r["forks_count"],
+            "branch": branch, "pr": "PR #", "unreleased": unreleased, "ci": ci(branch),
+            "release": rel and {"tag": rel["tag_name"], "when": rel["published_at"], "pre": rel["prerelease"]},
+            "prs": [{"n": p["number"], "title": p["title"], "draft": bool(p.get("draft")),
+                     "by": (p.get("user") or {}).get("login", "?"), "ci": c} for p, c in zip(pulls, pr_ci)],
+            "issues": [{"n": i["number"], "title": i["title"], "created": i["created_at"],
+                        "labels": [l["name"] for l in i["labels"]]} for i in issues],
+            "issue_total": int(head.get("X-Total-Count") or len(issues)), "alerts": 0}
+
+
 def check(full):
-    on_gitlab = "." in full.split("/")[0]  # GitHub owners have no dots, hosts do
+    host = full.split("/")[0] if "." in full.split("/")[0] else None  # GitHub owners have no dots, hosts do
+    fetch, hint = {None: (github, "gh call failed: check `gh auth status`"),
+                   CODEBERG: (codeberg, "Codeberg call failed: check the name, or CODEBERG_TOKEN for a private repo"),
+                   }.get(host, (gitlab, "GitLab call failed: check the name, or GITLAB_TOKEN for a private project"))
     try:
-        d = (gitlab if on_gitlab else github)(full)
+        d = fetch(full)
     except Exception as e:  # one broken repo must not hide the others
-        hint = "GitLab call failed: check the name, or GITLAB_TOKEN for a private project" if on_gitlab \
-            else "gh call failed: check `gh auth status`"
         return {"repo": full, "error": str(e), "todo": [hint]}
     d["pushed"] = age(d["pushed"])
     if d["release"]:
@@ -419,7 +469,7 @@ def gui_mode():
             box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin_top=10, margin_bottom=10,
                           margin_start=16, margin_end=16)
             bar = Gtk.Box(spacing=6)
-            entry = Gtk.Entry(placeholder_text="owner/name, or a GitHub or GitLab link", hexpand=True)
+            entry = Gtk.Entry(placeholder_text="owner/name, or a GitHub, GitLab or Codeberg link", hexpand=True)
             add = Gtk.Button(label="Add repo")
             sort = Gtk.DropDown.new_from_strings(sort_labels)
             sort.set_selected(SORTS.index(tab["sort"]))
@@ -436,7 +486,7 @@ def gui_mode():
                 if not name:
                     msg.set_visible(True)
                     msg.set_markup(f"<span foreground='{colours['red']}'>Type owner/name (GitHub), gitlab.com/group/project, "
-                                   "or paste a GitHub or GitLab link</span>")
+                                   "codeberg.org/owner/repo, or paste a link</span>")
                     return
                 later(add_repo, name, tab_name)
 
