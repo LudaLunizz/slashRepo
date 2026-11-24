@@ -118,6 +118,8 @@ fn install_sets_up_each_agent_present_and_only_those() {
     .unwrap();
     std::fs::write(h.path(".local/bin/repo-status-hook"), "#!/bin/sh\n# open the Repo Status window\n").unwrap();
     std::fs::write(h.path(".gemini/settings.json"), "{}").unwrap();
+    std::fs::create_dir_all(h.path(".local/share/applications")).unwrap();
+    std::fs::write(h.path(".local/share/applications/repo-status.desktop"), "[Desktop Entry]\n").unwrap();
     for _ in 0..2 {
         // twice: the second run changes nothing
         let out = h.run(&["install"], None, &[]);
@@ -125,7 +127,8 @@ fn install_sets_up_each_agent_present_and_only_those() {
     }
     for f in [
         ".local/bin/repo-status",
-        ".local/share/applications/repo-status.desktop",
+        ".local/share/applications/io.github.ludalunizz.SlashRepo.desktop",
+        ".local/share/icons/hicolor/scalable/apps/io.github.ludalunizz.SlashRepo.svg",
         ".claude/commands/repo.md",
         ".config/opencode/command/repo.md",
         ".gemini/commands/repo.toml",
@@ -136,6 +139,7 @@ fn install_sets_up_each_agent_present_and_only_those() {
         assert!(h.path(f).exists(), "missing {f}");
     }
     assert!(!h.path(".local/bin/repo-status-hook").exists(), "old shell hook left behind");
+    assert!(!h.path(".local/share/applications/repo-status.desktop").exists(), "old desktop file left behind");
     let v: serde_json::Value = serde_json::from_str(&read(&h.path(".claude/settings.json"))).unwrap();
     let list = v["hooks"]["UserPromptSubmit"].as_array().unwrap();
     assert_eq!(list.len(), 1, "{v}");

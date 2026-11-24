@@ -16,6 +16,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use config::{DEFAULT_TAB, Sort, repo_name, tab_name};
 
+/// GTK application id; also the name of the installed icon and desktop file.
+pub const APP_ID: &str = "io.github.ludalunizz.SlashRepo";
+
 const USAGE: &str = "usage:
   repo-status                         open the window
   repo-status --text [TAB]            print the report (all tabs, or one)
