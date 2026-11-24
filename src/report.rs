@@ -217,6 +217,12 @@ pub fn ordered(repos: &[String], sort: Sort, cards: &HashMap<String, Card>) -> V
 }
 
 /// The repo's page: GitLab/Codeberg lines carry their host, GitHub lines are owner/name.
+/// Only https links are opened from the window: a forge answer (or a hand-edited host) must not
+/// be able to hand the desktop a `file:` or `javascript:` address.
+pub fn openable(url: &str) -> bool {
+    url.get(..8).is_some_and(|p| p.eq_ignore_ascii_case("https://")) && !url.contains(char::is_whitespace)
+}
+
 pub fn web_url(repo: &str) -> String {
     match host(repo) {
         Some(_) => format!("https://{repo}"),
@@ -355,6 +361,15 @@ mod tests {
         }
         fn http(&self, _: &str, _: Option<&str>, _: Option<&serde_json::Value>) -> forge::Res<forge::Reply> {
             panic!("boom");
+        }
+    }
+
+    #[test]
+    fn only_https_links_open() {
+        assert!(openable("https://github.com/me/app/pull/3"));
+        assert!(openable("HTTPS://codeberg.org/me/app"));
+        for bad in ["http://github.com/x", "file:///etc/passwd", "javascript:alert(1)", "", "https://a b", "ssh://x"] {
+            assert!(!openable(bad), "{bad}");
         }
     }
 

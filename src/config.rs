@@ -222,13 +222,15 @@ pub fn set_sort(lines: &[String], tab: &str, sort: Sort) -> Vec<String> {
     out
 }
 
-/// ~/.config/slashrepo/repos; on Windows %APPDATA%\slashRepo\repos.
+/// $XDG_CONFIG_HOME/slashrepo/repos (default ~/.config/slashrepo/repos); on Windows %APPDATA%\slashRepo\repos.
 pub fn path() -> PathBuf {
     if cfg!(windows) {
         let appdata = std::env::var_os("APPDATA").filter(|v| !v.is_empty());
         return appdata.map_or_else(|| crate::home().join("AppData/Roaming"), PathBuf::from).join("slashRepo/repos");
     }
-    crate::home().join(".config/slashrepo/repos")
+    // XDG_CONFIG_HOME when it is an absolute path (the spec says to ignore a relative one)
+    let base = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).filter(|p| p.is_absolute());
+    base.unwrap_or_else(|| crate::home().join(".config")).join("slashrepo/repos")
 }
 
 /// The file's lines; `Ok(None)` only when there is no file. Any other failure (no permission,

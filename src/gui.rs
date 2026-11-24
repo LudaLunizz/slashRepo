@@ -77,7 +77,7 @@ fn link(ui: &Rc<Ui>, markup: &str, url: &str) -> gtk::Button {
     b.set_child(Some(&label(&format!("<span foreground='{LINK}'>{markup}</span>"), false)));
     let (win, url) = (ui.win.downgrade(), url.to_string());
     b.connect_clicked(move |_| {
-        if let Some(win) = win.upgrade() {
+        if let (true, Some(win)) = (report::openable(&url), win.upgrade()) {
             gtk::UriLauncher::new(&url).launch(Some(&win), gio::Cancellable::NONE, |_| {});
         }
     });

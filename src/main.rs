@@ -175,6 +175,12 @@ pub fn par_map<T: Sync, R: Send>(items: &[T], threads: usize, f: impl Fn(&T) -> 
     out.into_iter().map(|(_, r)| r).collect()
 }
 
+/// Wrong usage: exit code 2, the convention, so a script can tell it from a failed run (1).
+fn misuse(msg: &str) -> ExitCode {
+    eprintln!("{msg}");
+    ExitCode::from(2)
+}
+
 fn fail(msg: &str) -> ExitCode {
     eprintln!("{msg}");
     ExitCode::FAILURE
@@ -252,7 +258,7 @@ fn main() -> ExitCode {
                 None => (*cmd == "--add").then(|| DEFAULT_TAB.to_string()),
             };
             let (Some(repo), true) = (repo_name(repo), rest.is_empty() || tab.is_some()) else {
-                return fail("not a repo (owner/name, a GitHub/GitLab/Codeberg link) or not a tab name (no [ ] #)");
+                return misuse("not a repo (owner/name, a GitHub/GitLab/Codeberg link) or not a tab name (no [ ] #)");
             };
             if *cmd == "--add" {
                 let tab = tab.unwrap_or_else(|| DEFAULT_TAB.into());
@@ -264,9 +270,9 @@ fn main() -> ExitCode {
         ["--remove-tab", tab] => edited(config::edit(|l| config::remove_tab(l, tab.trim()))),
         ["--sort", tab, sort] => match (tab_name(tab), Sort::parse(sort)) {
             (Some(tab), Some(sort)) => edited(config::edit(|l| config::set_sort(l, &tab, sort))),
-            _ => fail(&usage()),
+            _ => misuse(&usage()),
         },
-        _ => fail(&usage()),
+        _ => misuse(&usage()),
     }
 }
 
