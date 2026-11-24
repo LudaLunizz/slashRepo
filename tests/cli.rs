@@ -309,3 +309,98 @@ fn install_without_a_home_folder_stops_before_writing() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("HOME is not set"), "{:?}", out.stderr);
 }
+
+#[test]
+fn uninstall_undoes_install_and_keeps_what_is_not_ours() {
+    let h = TempHome::new("uninstall");
+    for d in [".claude", ".config/opencode", ".codex", ".gemini"] {
+        std::fs::create_dir_all(h.path(d)).unwrap();
+    }
+    let other = serde_json::json!({"type": "command", "command": "echo hi"});
+    std::fs::write(
+        h.path(".claude/settings.json"),
+        serde_json::json!({"theme": "x", "hooks": {
+            "UserPromptSubmit": [{"hooks": [other]}],
+            "Stop": [{"hooks": [other]}]}})
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(h.path(".gemini/settings.json"), "{}").unwrap();
+    std::fs::create_dir_all(h.path(".gemini/commands")).unwrap();
+    std::fs::write(h.path(".gemini/commands/repo.toml"), "mine = true\n").unwrap();
+    let list = h.path(CONFIG);
+    std::fs::create_dir_all(list.parent().unwrap()).unwrap();
+    std::fs::write(&list, "me/a\n").unwrap();
+    assert!(h.run(&["install"], None, &[]).status.success());
+    assert!(read(&h.path(".claude/settings.json")).contains(" hook"));
+
+    let out = h.run(&["uninstall"], None, &[]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(said.contains("hook removed") && said.contains("kept") && said.contains("not ours"), "{said}");
+    // what install made is gone
+    for f in [
+        ".claude/commands/repo.md",
+        ".config/opencode/command/repo.md",
+        ".agents/skills/repo/SKILL.md",
+        if cfg!(windows) { "AppData/Local/Programs/slashRepo/repo-status.exe" } else { ".local/bin/repo-status" },
+    ] {
+        assert!(!h.path(f).exists(), "still there: {f}");
+    }
+    #[cfg(unix)]
+    for f in [
+        ".local/share/applications/io.github.ludalunizz.SlashRepo.desktop",
+        ".local/share/icons/hicolor/scalable/apps/io.github.ludalunizz.SlashRepo.svg",
+    ] {
+        assert!(!h.path(f).exists(), "still there: {f}");
+    }
+    #[cfg(windows)]
+    assert!(!h.path("AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Repo Status.lnk").exists());
+    // what is not ours is not touched: the user's own command, the list, the other hooks, the theme
+    assert_eq!(read(&h.path(".gemini/commands/repo.toml")), "mine = true\n");
+    assert_eq!(read(&list), "me/a\n");
+    let v: serde_json::Value = serde_json::from_str(&read(&h.path(".claude/settings.json"))).unwrap();
+    assert_eq!(v["theme"], "x");
+    assert_eq!(v["hooks"]["UserPromptSubmit"][0]["hooks"], serde_json::json!([other]));
+    assert_eq!(v["hooks"]["Stop"][0]["hooks"], serde_json::json!([other]));
+    // the backup is the settings.json from just before the removal
+    assert!(read(&h.path(".claude/settings.json.bak-slashrepo")).contains("repo-status"));
+
+    // twice: nothing left to do, and still success
+    let again = h.run(&["uninstall"], None, &[]);
+    assert!(again.status.success());
+    assert!(
+        String::from_utf8_lossy(&again.stdout).contains("nothing to remove")
+            || String::from_utf8_lossy(&again.stdout).contains("not ours")
+    );
+}
+
+#[test]
+fn uninstall_leaves_a_settings_file_that_held_only_our_hook_empty_but_valid() {
+    let h = TempHome::new("uninstall-only");
+    std::fs::create_dir_all(h.path(".claude")).unwrap();
+    assert!(h.run(&["install"], None, &[]).status.success());
+    assert!(h.run(&["uninstall"], None, &[]).status.success());
+    let v: serde_json::Value = serde_json::from_str(&read(&h.path(".claude/settings.json"))).unwrap();
+    assert_eq!(v, serde_json::json!({}));
+    // a settings.json that is not JSON is left as it is, and the other steps still run
+    std::fs::write(h.path(".claude/settings.json"), "broken").unwrap();
+    let out = h.run(&["uninstall"], None, &[]);
+    assert!(!out.status.success());
+    assert_eq!(read(&h.path(".claude/settings.json")), "broken");
+}
+
+#[cfg(unix)]
+#[test]
+fn uninstall_removes_the_trigger_units() {
+    let h = TempHome::new("uninstall-units");
+    let dir = h.path(".config/systemd/user");
+    std::fs::create_dir_all(&dir).unwrap();
+    for u in ["slashrepo-trigger.path", "slashrepo-trigger.service", "other.service"] {
+        std::fs::write(dir.join(u), "[Unit]\n").unwrap();
+    }
+    let out = h.run(&["uninstall"], None, &[]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(!dir.join("slashrepo-trigger.path").exists() && !dir.join("slashrepo-trigger.service").exists());
+    assert!(dir.join("other.service").exists(), "somebody else's unit");
+}

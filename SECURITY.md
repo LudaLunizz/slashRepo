@@ -21,6 +21,7 @@ Only the latest release (or the latest `main`, while there is no release) gets s
 ## What is in scope
 
 - `install.sh` and `repo-status install`: they download a release binary (checked against `SHA256SUMS`) when Rust is missing, edit `~/.claude/settings.json` and copy files into `~/.local/bin`, `~/.claude` and the other agents' folders;
+- `repo-status uninstall`: it edits `~/.claude/settings.json` (removing our hook entry only) and deletes files, so anything that makes it remove or change a file that is not ours is in scope;
 - `repo-status hook`: it runs on every prompt you send in Claude Code and reads the prompt text, so anything that lets a prompt run a command is in scope;
 - `repo-status`: it runs `gh` with your login, calls GitLab and Codeberg with your tokens (each only to its own host) and shows what they return (titles of issues and pull requests), so markup or text from a forge that is executed or misleads the window, or a token sent to the wrong host, is in scope.
 

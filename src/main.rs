@@ -13,6 +13,7 @@ mod gui;
 mod hook;
 mod install;
 mod report;
+mod uninstall;
 #[cfg(windows)]
 mod win;
 
@@ -36,6 +37,7 @@ const USAGE: &str = "usage:
   repo-status --sort TAB mine|stars|forks   order of a tab
   repo-status install [--trigger FILE]    set up /repo for the coding agents on this machine
                                       (--trigger: Linux only)
+  repo-status uninstall               undo install (keeps your repo list)
   repo-status hook                    the Claude Code prompt hook (reads the prompt on stdin)
   repo-status --help | --version";
 
@@ -179,6 +181,7 @@ fn main() -> ExitCode {
             hook::run(&window);
             ExitCode::SUCCESS // a hook must never stand in the way of the prompt
         }
+        ["uninstall"] => uninstall::run().map_or_else(|e| fail(&e), |()| ExitCode::SUCCESS),
         ["install"] => install::run(None).map_or_else(|e| fail(&e), |()| ExitCode::SUCCESS),
         ["install", "--trigger", f] => {
             install::run(Some(Path::new(f))).map_or_else(|e| fail(&e), |()| ExitCode::SUCCESS)
