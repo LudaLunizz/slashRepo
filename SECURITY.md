@@ -28,7 +28,8 @@ Only the latest release (or the latest `main`, while there is no release) gets s
 ## What is not a vulnerability by itself
 
 - It uses your own `gh` login, read-only; that it can see everything `gh` can see is how it works.
-- A prompt that mentions "repo check" in passing opens the window; the README names this as a limit.
+- A prompt that contains "repo check" or "check the repos" as words opens the window; the README names this as a limit.
+- The checksum next to a prebuilt binary comes from the same release as the binary; the README names this as a limit.
 
 ## Disclosure
 
