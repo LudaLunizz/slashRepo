@@ -275,7 +275,7 @@ pub fn edit(change: impl FnOnce(&[String]) -> Vec<String>) -> std::io::Result<()
         Err(e) => return Err(Error::new(e.kind(), format!("could not read it, left untouched ({e})"))),
     };
     let lines = change(&lines);
-    crate::write_atomic(&path(), lines.concat().as_bytes(), 0o644)
+    crate::write_atomic_keep(&path(), lines.concat().as_bytes(), 0o644)
 }
 
 /// Every repo of every tab once, in file order.

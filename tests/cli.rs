@@ -231,3 +231,81 @@ fn install_sets_up_each_agent_present_and_only_those() {
         assert!(!bare.path(d).exists(), "bare: made {d}");
     }
 }
+
+#[test]
+fn install_never_overwrites_a_command_file_that_is_not_ours() {
+    let h = TempHome::new("install-own");
+    for d in [".claude/commands", ".config/opencode/command"] {
+        std::fs::create_dir_all(h.path(d)).unwrap();
+    }
+    std::fs::write(h.path(".claude/commands/repo.md"), "my own /repo: list my todos\n").unwrap();
+    std::fs::write(h.path(".config/opencode/command/repo.md"), "# mine\nsummarise the repo\n").unwrap();
+    let out = h.run(&["install"], None, &[]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("kept your own"), "{:?}", out.stdout);
+    assert_eq!(read(&h.path(".claude/commands/repo.md")), "my own /repo: list my todos\n");
+    assert_eq!(read(&h.path(".config/opencode/command/repo.md")), "# mine\nsummarise the repo\n");
+    // the hook does not depend on the command file
+    assert!(read(&h.path(".claude/settings.json")).contains(" hook"));
+    // a file from an older slashRepo (it calls repo-status) is updated
+    std::fs::write(h.path(".config/opencode/command/repo.md"), "old text: !`repo-status`\n").unwrap();
+    assert!(h.run(&["install"], None, &[]).status.success());
+    let now = read(&h.path(".config/opencode/command/repo.md"));
+    assert!(now.contains("repo-status") && !now.starts_with("old text"), "{now}");
+}
+
+#[test]
+fn one_failing_agent_does_not_stop_the_others() {
+    let h = TempHome::new("install-partial");
+    std::fs::create_dir_all(h.path(".claude")).unwrap();
+    std::fs::create_dir_all(h.path(".config/opencode")).unwrap();
+    std::fs::write(h.path(".claude/settings.json"), "this is not json").unwrap();
+    let out = h.run(&["install"], None, &[]);
+    assert!(!out.status.success());
+    let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(stdout.contains("Claude Code: FAILED") && stdout.contains("opencode: /repo"), "{stdout}");
+    assert!(stderr.contains("1 of 2 steps failed"), "{stderr}");
+    assert!(h.path(".config/opencode/command/repo.md").exists());
+    // nothing of Claude Code was written: not the command file, and settings.json is as it was
+    assert!(!h.path(".claude/commands/repo.md").exists());
+    assert_eq!(read(&h.path(".claude/settings.json")), "this is not json");
+    assert!(!h.path(".claude/settings.json.bak-slashrepo").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn install_keeps_the_mode_and_the_symlink_of_settings_json() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let h = TempHome::new("install-mode");
+    std::fs::create_dir_all(h.path(".claude")).unwrap();
+    std::fs::create_dir_all(h.path("dotfiles")).unwrap();
+    let real = h.path("dotfiles/settings.json");
+    std::fs::write(&real, "{\"theme\": \"x\"}").unwrap();
+    std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let link = h.path(".claude/settings.json");
+    symlink(&real, &link).unwrap();
+    assert!(h.run(&["install"], None, &[]).status.success());
+    assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link was replaced");
+    assert!(read(&real).contains(" hook") && read(&real).contains("\"theme\""));
+    assert_eq!(std::fs::metadata(&real).unwrap().permissions().mode() & 0o777, 0o600);
+    // the backup is as private as the original and holds the state before the change
+    let backup = h.path(".claude/settings.json.bak-slashrepo");
+    assert_eq!(std::fs::metadata(&backup).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(read(&backup), "{\"theme\": \"x\"}");
+    // a second install changes nothing and leaves that backup alone
+    assert!(h.run(&["install"], None, &[]).status.success());
+    assert_eq!(read(&backup), "{\"theme\": \"x\"}");
+    // after the user edits the file (hook gone, new key), the next change gets a fresh backup
+    std::fs::write(&real, "{\"theme\": \"y\", \"new\": 1}").unwrap();
+    assert!(h.run(&["install"], None, &[]).status.success());
+    assert_eq!(read(&backup), "{\"theme\": \"y\", \"new\": 1}");
+    assert!(read(&real).contains("\"new\"") && read(&real).contains(" hook"));
+}
+
+#[cfg(unix)]
+#[test]
+fn install_without_a_home_folder_stops_before_writing() {
+    let out = Command::new(BIN).arg("install").env_clear().output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("HOME is not set"), "{:?}", out.stderr);
+}

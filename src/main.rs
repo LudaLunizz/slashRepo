@@ -90,6 +90,28 @@ pub fn write_atomic(path: &Path, data: &[u8], mode: u32) -> std::io::Result<()> 
     written
 }
 
+/// The Unix mode of an existing file (None on Windows or when it is not there).
+pub fn mode_of(path: &Path) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).ok().map(|m| m.permissions().mode() & 0o777)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
+}
+
+/// write_atomic for a file that may be there already and belongs to the user: a symlink stays a
+/// symlink (the file it points to is replaced) and the file keeps its mode; `default_mode` is for a
+/// new file.
+pub fn write_atomic_keep(path: &Path, data: &[u8], default_mode: u32) -> std::io::Result<()> {
+    let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    write_atomic(&real, data, mode_of(&real).unwrap_or(default_mode))
+}
+
 /// f over items on at most `threads` threads; results in item order.
 pub fn par_map<T: Sync, R: Send>(items: &[T], threads: usize, f: impl Fn(&T) -> R + Sync) -> Vec<R> {
     let next = AtomicUsize::new(0);
