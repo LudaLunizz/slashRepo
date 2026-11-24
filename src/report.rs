@@ -173,15 +173,18 @@ fn host(full: &str) -> Option<&str> {
 }
 
 pub fn check_with(net: &dyn Net, full: &str) -> Card {
-    let (got, hint) = match host(full) {
-        None => (forge::github(net, full), "gh call failed: check `gh auth status`"),
+    type Fetch = fn(&dyn Net, &str) -> forge::Res<Fetched>;
+    let (fetch, hint): (Fetch, _) = match host(full) {
+        None => (forge::github, "gh call failed: check `gh auth status`"),
         Some(CODEBERG) => {
-            (forge::codeberg(net, full), "Codeberg call failed: check the name, or CODEBERG_TOKEN for a private repo")
+            (forge::codeberg, "Codeberg call failed: check the name, or CODEBERG_TOKEN for a private repo")
         }
-        Some(_) => {
-            (forge::gitlab(net, full), "GitLab call failed: check the name, or GITLAB_TOKEN for a private project")
-        }
+        Some(_) => (forge::gitlab, "GitLab call failed: check the name, or GITLAB_TOKEN for a private project"),
     };
+    // a panic while reading one repo's answer becomes that repo's error card, not a dead window or
+    // a crashed `--text` run
+    let got = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fetch(net, full)))
+        .unwrap_or_else(|_| Err("internal error while reading the answer".into()));
     match got {
         // one broken repo must not hide the others
         Err(e) => Card { repo: full.into(), result: Err(e), todo: vec![hint.into()] },
@@ -342,5 +345,26 @@ mod tests {
         assert_eq!(unix_time("1970-01-01T00:00:00Z"), Some(0));
         assert_eq!(unix_time("2000-03-01T00:00:00Z"), Some(951868800));
         assert_eq!(age_at("garbage", now), "?");
+    }
+
+    /// A net whose every call panics, to prove one broken repo only costs its own card.
+    struct Panics;
+    impl Net for Panics {
+        fn gh(&self, _: &[&str]) -> forge::Res<serde_json::Value> {
+            panic!("boom");
+        }
+        fn http(&self, _: &str, _: Option<&str>, _: Option<&serde_json::Value>) -> forge::Res<forge::Reply> {
+            panic!("boom");
+        }
+    }
+
+    #[test]
+    fn a_panic_while_reading_becomes_an_error_card() {
+        for repo in ["me/app", "codeberg.org/me/app", "gitlab.com/me/app"] {
+            let card = check_with(&Panics, repo);
+            assert_eq!(card.repo, repo);
+            assert!(card.result.is_err(), "{repo}");
+            assert!(!card.todo.is_empty());
+        }
     }
 }
