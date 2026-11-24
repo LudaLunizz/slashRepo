@@ -140,8 +140,10 @@ fn install_sets_up_each_agent_present_and_only_those() {
     }
     std::fs::write(
         h.path(".claude/settings.json"),
-        r#"{"theme":"x","hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"OLD","timeout":5}]}]}}"#
-            .replace("OLD", &h.path(".local/bin/repo-status-hook").to_string_lossy()),
+        serde_json::json!({"theme": "x", "hooks": {"UserPromptSubmit": [{"hooks": [
+            {"type": "command", "command": h.path(".local/bin/repo-status-hook").to_string_lossy(), "timeout": 5}
+        ]}]}})
+        .to_string(),
     )
     .unwrap();
     std::fs::write(h.path(".local/bin/repo-status-hook"), "#!/bin/sh\n# open the Repo Status window\n").unwrap();
