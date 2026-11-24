@@ -326,7 +326,20 @@ fn snapshot_if_asked(ui: &Rc<Ui>) {
     });
 }
 
-fn activate(app: &gtk::Application) {
+/// `shown` points at the open window's state. Every `/repo` activates the app again; a second
+/// activation (GApplication hands it to the running process) shows the window that is there,
+/// and refreshes it unless a check is still running, as the Refresh button would.
+fn activate(app: &gtk::Application, shown: &RefCell<Weak<Ui>>) {
+    if let Some(open) = app.windows().first() {
+        open.present();
+        if let Some(ui) = shown.borrow().upgrade()
+            && ui.busy.borrow().is_empty()
+        {
+            ui.cards.borrow_mut().clear();
+            render(&ui);
+        }
+        return;
+    }
     // link buttons as tight as text lines; a theme button is ~2 lines tall
     let css = gtk::CssProvider::new();
     css.load_from_string(
@@ -390,6 +403,7 @@ fn activate(app: &gtk::Application) {
             ui.book.set_current_page(Some(i as u32));
         }
     });
+    *shown.borrow_mut() = Rc::downgrade(&ui);
     render(&ui);
     // the window owns the state from here; it lives as long as the window
     win.connect_destroy(move |_| drop(ui.clone()));
@@ -398,7 +412,8 @@ fn activate(app: &gtk::Application) {
 
 pub fn run() -> ExitCode {
     let app = gtk::Application::builder().application_id(crate::APP_ID).build();
-    app.connect_activate(activate);
+    let shown = RefCell::new(Weak::new());
+    app.connect_activate(move |app| activate(app, &shown));
     let code = app.run_with_args::<&str>(&[]);
     if code == glib::ExitCode::SUCCESS { ExitCode::SUCCESS } else { ExitCode::FAILURE }
 }
