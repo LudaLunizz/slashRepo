@@ -1,7 +1,7 @@
 name: CI
 
-# Every push to main and every pull request: syntax of the script and the
-# installer, the hook's prompt matching and the tabs file edits.
+# Every push to main and every pull request: format, lint, build and test the Rust binary
+# (the tests cover the repos file, the prompt hook, the installer and the forge parsing).
 on:
   push:
     branches: [main]
@@ -20,9 +20,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: python3 -I -c "import ast,sys; ast.parse(open('bin/repo-status').read())"
-      - run: sh -n install.sh && sh -n bin/repo-status-hook
-      - run: tests/hook_test.sh
-      - run: python3 -I tests/config_test.py
-      - run: tests/install_test.sh
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libgtk-4-dev
+      - run: rustup toolchain install stable --profile minimal -c clippy,rustfmt && rustup default stable
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+      - run: sh -n install.sh
       - run: python3 -I -c "import tomllib; tomllib.load(open('commands/gemini/repo.toml','rb'))"

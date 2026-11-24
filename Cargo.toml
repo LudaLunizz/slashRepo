@@ -1,0 +1,32 @@
+[package]
+name = "slashrepo"
+version = "0.5.0"
+edition = "2024"
+rust-version = "1.92"
+description = "/repo for coding agents: a window with where each of your repos stands (release, CI, PRs, issues, to-dos)"
+license = "MIT"
+repository = "https://github.com/LudaLunizz/slashRepo"
+publish = false
+
+[[bin]]
+name = "repo-status"
+path = "src/main.rs"
+
+[dependencies]
+# v4_12: CssProvider::load_from_string; UriLauncher and AlertDialog are 4.10.
+gtk = { package = "gtk4", version = "0.11", features = ["v4_12"] }
+regex = { version = "1", default-features = false, features = ["std", "unicode-case", "unicode-perl"] }
+# preserve_order: editing ~/.claude/settings.json must keep the user's key order.
+serde_json = { version = "1", features = ["preserve_order"] }
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+
+[profile.release]
+overflow-checks = true
+lto = "thin"
+strip = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+mem_forget = "deny"

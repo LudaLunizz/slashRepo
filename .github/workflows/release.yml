@@ -1,0 +1,39 @@
+name: Release binary
+
+# When a release is published: build the Linux x86_64 binary on the oldest supported runner
+# (so it runs on that glibc/GTK and newer), attach it with SHA256SUMS. install.sh downloads
+# these when cargo is not installed.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # upload the release assets
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libgtk-4-dev
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: Version matches the tag
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: test "v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)" = "$TAG"
+      - run: cargo test --locked --release
+      - run: cargo build --locked --release
+      - run: |
+          mkdir dist
+          cp target/release/repo-status dist/repo-status-x86_64-linux
+          cd dist && sha256sum repo-status-x86_64-linux > SHA256SUMS && cat SHA256SUMS
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$TAG" dist/repo-status-x86_64-linux dist/SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY"
