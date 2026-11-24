@@ -20,8 +20,11 @@ commits since the last release, and a short to-do list. A dot tells you the mood
 
 The report is made by a small Python script that talks to GitHub through `gh`. A Claude Code hook starts it
 the moment you send the prompt. **Claude never reads, writes or summarises the report**, so the repo info
-costs **0 tokens**. All Claude does is answer one line: "Repo Status window opened."
-(That one line is the only thing the turn costs; the numbers in the window are free.)
+costs **0 tokens**. A bare `/repo` (or a bare "repo check") is even blocked by the hook after the window
+starts, so the prompt never reaches the model at all: no turn, no reply, nothing in the conversation (you
+see "Repo Status window opened (0 tokens)." and that is all). `/repo` is also hidden from Claude's own
+command list, so it doesn't cost a line of context every session. If you write a longer prompt that merely
+mentions a repo check, the window still opens but the prompt goes through, so the rest is not lost.
 
 It is also read-only. It looks, it never touches.
 
@@ -102,7 +105,7 @@ GitLab and Codeberg have no Dependabot alerts here.
 
 | Agent | Type | How it opens | Tokens for the report |
 |---|---|---|---|
-| Claude Code | `/repo` or "repo check" | a hook opens the window | 0 |
+| Claude Code | `/repo` or "repo check" | a hook opens the window and blocks the prompt | 0, no turn at all |
 | opencode | `/repo` | the command runs `repo-status` itself | 0 |
 | Gemini CLI | `/repo` | the command runs it (asks you once first) | 0 |
 | Codex | `$repo` (or pick it in `/skills`) | a `repo` skill: the agent runs one command | 0 (a few for that one command) |
@@ -134,7 +137,7 @@ it can do, and that only opens the read-only window. Works for the opencode and 
 ## Limits
 
 Linux and GTK 4 only. The hook matches the prompt text, so a prompt that mentions "repo check" in passing
-also opens the window. The pictures above use made-up repos.
+also opens the window (it is only blocked when the prompt is nothing but the command). The pictures above use made-up repos.
 
 ## Licence
 

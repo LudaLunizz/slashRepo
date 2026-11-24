@@ -1,6 +1,15 @@
 #!/bin/sh
 # Claude Code UserPromptSubmit hook: open the Repo Status window when the prompt says
 # "repo check", "repos check", "check the repos" or starts with /repo. Always exits 0.
-jq -r '.prompt // ""' | grep -qiE 'repos? check|check (up on )?(the |my )?repos\b|^ */repo( |$)' &&
-  { setsid nohup "${REPO_STATUS:-$HOME/.local/bin/repo-status}" >/dev/null 2>&1 </dev/null & }
+#
+# A prompt that is ONLY the command (/repo, "repo check", "please check the repos") is blocked
+# after the window is started: Claude Code then drops it, so nothing reaches the model and the
+# report costs 0 tokens (the reason text below is shown to you only). A longer prompt that merely
+# mentions it still opens the window but goes through, so the rest of what you wrote isn't lost.
+prompt=$(jq -r '.prompt // ""') || exit 0
+printf '%s' "$prompt" | grep -qiE 'repos? check|check (up on )?(the |my )?repos\b|^ */repo( |$)' || exit 0
+{ setsid nohup "${REPO_STATUS:-$HOME/.local/bin/repo-status}" >/dev/null 2>&1 </dev/null & }
+if printf '%s' "$prompt" | grep -qiE '^[[:space:]]*(/repo|(please )?(repos? check|check (up on )?(the |my )?repos)( now| please)?[.!]?)[[:space:]]*$'; then
+  printf '%s\n' '{"decision":"block","reason":"Repo Status window opened (0 tokens)."}'
+fi
 exit 0
