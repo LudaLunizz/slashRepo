@@ -27,3 +27,43 @@ jobs:
       - run: cargo test --locked
       - run: sh -n install.sh
       - run: python3 -I -c "import tomllib; tomllib.load(open('commands/gemini/repo.toml','rb'))"
+
+  # The Windows exe: lint, the same tests (installer, hook, list flags) on Windows, a release build,
+  # then the real window on the runner (no GPU: Direct3D's software renderer) saved as a picture.
+  windows:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup toolchain install stable --profile minimal -c clippy && rustup default stable
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+      - run: cargo build --locked --release
+      - name: install.ps1 parses
+        shell: pwsh
+        run: |
+          $e = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD\install.ps1", [ref]$null, [ref]$e)
+          if ($e) { $e; exit 1 }
+      - name: Open the window and save a snapshot
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $env:APPDATA = "$env:RUNNER_TEMP\appdata"
+          $env:SLASHREPO_SNAPSHOT = "$env:RUNNER_TEMP\window.png"
+          New-Item -ItemType Directory -Force "$env:APPDATA\slashRepo" | Out-Null
+          "LudaLunizz/slashRepo`ncli/cli`n`n[Elsewhere]`ngitlab.com/gitlab-org/cli`ncodeberg.org/forgejo/forgejo`n" |
+            Set-Content -NoNewline "$env:APPDATA\slashRepo\repos"
+          & target\release\repo-status.exe --text | Out-Host
+          $p = Start-Process target\release\repo-status.exe -PassThru
+          if (-not $p.WaitForExit(180000)) { Stop-Process $p; throw "the window did not finish within 3 minutes" }
+          if (-not (Test-Path $env:SLASHREPO_SNAPSHOT)) { throw "no snapshot (exit code $($p.ExitCode))" }
+          Copy-Item $env:SLASHREPO_SNAPSHOT target\release\window.png
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: repo-status-windows
+          path: |
+            target/release/repo-status.exe
+            target/release/window.png
+          if-no-files-found: warn

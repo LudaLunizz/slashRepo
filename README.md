@@ -30,12 +30,23 @@ before it reaches the model. No turn, no reply, no tokens. The repo info is free
 
 ## 30-second install
 
-Linux, GTK 4.12+, and `gh` logged in. That's it.
+**Linux:** GTK 4.12+ and `gh` logged in. That's it.
 
 ```sh
 git clone https://github.com/LudaLunizz/slashRepo
 cd slashRepo && ./install.sh
 ```
+
+**Windows 10/11 (x86_64):** `gh` logged in. Nothing else — one `.exe`, no runtime to install.
+
+```powershell
+git clone https://github.com/LudaLunizz/slashRepo
+cd slashRepo; powershell -ExecutionPolicy Bypass -File install.ps1
+```
+
+Or skip the clone: download `repo-status-x86_64-windows.exe` from the
+[latest release](https://github.com/LudaLunizz/slashRepo/releases/latest), double-click it for the
+window, or run `repo-status-x86_64-windows.exe install` once to set up `/repo` and the Start Menu entry.
 
 Has Rust? It builds from source. No Rust? It downloads the prebuilt binary and verifies the checksum.
 Then it hooks into every agent it finds — done.
@@ -70,6 +81,7 @@ tokio-rs/tokio
 ```
 
 No config file yet? It starts with your 20 newest non-fork repos. Change something and it saves.
+The file is `~/.config/slashrepo/repos` (Windows: `%APPDATA%\slashRepo\repos`).
 
 ## What you get per repo
 
@@ -82,7 +94,12 @@ No config file yet? It starts with your 20 newest non-fork repos. Change somethi
 
 ## The fine print
 
-- **Linux + GTK 4 only** (for now).
+- **Linux (GTK 4) and Windows 10/11.** Same window, same file format, same flags. macOS: not yet.
+- **Windows notes.** The exe is not code-signed yet, so SmartScreen may ask once ("More info" → "Run
+  anyway"); compare it with `SHA256SUMS` from the release. It installs to
+  `%LOCALAPPDATA%\Programs\slashRepo`; add that folder to your PATH to type `repo-status` anywhere.
+  In PowerShell or cmd, add `| more` to `repo-status --text` (Windows doesn't wait for a windowed program);
+  Git Bash needs nothing extra. The sandbox trigger (`--trigger`) is Linux only.
 - **Read-only.** It looks at your repos. It never touches them.
 - **MIT licensed.** Fork it, ship it, do what you want.
 

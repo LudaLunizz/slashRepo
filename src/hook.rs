@@ -8,7 +8,7 @@
 
 use std::io::Read;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -28,14 +28,38 @@ pub fn decide(prompt: &str) -> (bool, bool) {
     (open, open && ONLY.is_match(prompt))
 }
 
-/// Start the window detached from the hook (own session), like `setsid -f`.
-fn open(window: &Path) {
+/// Start the window detached from the hook (own session), like `setsid -f`. False if it could not.
+#[cfg(unix)]
+pub fn open(window: &Path) -> bool {
+    use std::process::Command;
     let null = || Stdio::null();
     let spawned = Command::new("setsid").arg("-f").arg(window).stdin(null()).stdout(null()).stderr(null()).status();
-    if spawned.is_err() {
-        use std::os::unix::process::CommandExt;
-        let _ = Command::new(window).process_group(0).stdin(null()).stdout(null()).stderr(null()).spawn();
+    if spawned.is_ok_and(|s| s.success()) {
+        return true;
     }
+    use std::os::unix::process::CommandExt;
+    Command::new(window).process_group(0).stdin(null()).stdout(null()).stderr(null()).spawn().is_ok()
+}
+
+/// Start the window detached: no console, its own process group, and out of the agent's job
+/// object when that allows it (else the window would close with the agent's hook runner).
+#[cfg(windows)]
+pub fn open(window: &Path) -> bool {
+    use std::os::windows::process::CommandExt;
+    use windows_sys::Win32::System::Threading::{
+        CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS,
+    };
+    let start = |flags: u32| {
+        std::process::Command::new(window)
+            .creation_flags(flags)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .is_ok()
+    };
+    let base = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
+    start(base | CREATE_BREAKAWAY_FROM_JOB) || start(base)
 }
 
 pub fn run(window: &Path) {
