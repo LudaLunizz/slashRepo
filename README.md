@@ -2,7 +2,7 @@
 
 **Type `/repo`. Your repos show up, from GitHub, GitLab and Codeberg. The AI spends zero tokens on it.**
 
-![The flow: /repo, a hook, a script, a window, and 0 tokens for the info](docs/flow.svg)
+![The flow: /repo, a hook, repo-status, a window, and 0 tokens for the info](docs/flow.svg)
 
 You have a pile of GitHub repos. Is CI red somewhere? Did a PR turn green while you were not looking?
 Did you forget to cut a release four commits ago? Normally you would ask an AI to go look, and pay tokens
@@ -18,7 +18,8 @@ commits since the last release, and a short to-do list. A dot tells you the mood
 
 ## About those tokens
 
-The report is made by a small Python script that talks to GitHub through `gh`. A Claude Code hook starts it
+The report is made by one small Rust program, `repo-status`, that talks to GitHub through `gh` (and to GitLab
+and Codeberg over HTTPS). A Claude Code hook starts it
 the moment you send the prompt. **Claude never reads, writes or summarises the report**, so the repo info
 costs **0 tokens**. A bare `/repo` (or a bare "repo check") is even blocked by the hook after the window
 starts, so the prompt never reaches the model at all: no turn, no reply, nothing in the conversation (you
@@ -30,17 +31,24 @@ It is also read-only. It looks, it never touches.
 
 ## Install
 
-Needs `gh` (logged in, for GitHub repos), `jq` (for Claude Code), and `python3` with PyGObject + GTK 4.10 or newer (Linux).
+Linux with GTK 4.12 or newer, and `gh` (logged in) for GitHub repos. Nothing else at run time: no Python, no jq.
 
 ```sh
 git clone https://github.com/LudaLunizz/slashRepo
 cd slashRepo && ./install.sh
 ```
 
-This copies `repo-status` and `repo-status-hook` to `~/.local/bin` and adds a desktop entry. For Claude Code it
-adds `repo.md` to `~/.claude/commands` and the hook to `~/.claude/settings.json` (backup: `settings.json.bak-slashrepo`);
-for the other agents see below. Only agents that are installed get anything.
-Running it again changes nothing.
+With Rust installed (and the GTK 4 dev files, `libgtk-4-dev` on Debian/Ubuntu) `install.sh` builds the
+binary from the checkout. Without Rust it downloads the prebuilt Linux x86_64 binary of that version from
+the GitHub release and checks it against the release's `SHA256SUMS` first.
+
+Then `repo-status install` does the rest: it puts itself in `~/.local/bin` and adds a desktop entry. For
+Claude Code it adds `repo.md` to `~/.claude/commands` and `repo-status hook` to `~/.claude/settings.json`
+(backup: `settings.json.bak-slashrepo`); for the other agents see below. Only agents that are installed
+get anything. Running it again changes nothing.
+
+Coming from 0.4 (the Python version)? Run `./install.sh` once: it replaces the old `repo-status-hook`
+entry in `settings.json` with `repo-status hook` and deletes the old hook script. Your repos file stays as it is.
 
 ## Tabs: group your repos
 
@@ -101,7 +109,7 @@ GitLab and Codeberg have no Dependabot alerts here.
 
 ## Other coding agents
 
-`install.sh` also sets up `/repo` for the other agents it finds on your machine:
+`install.sh` (`repo-status install`) also sets up `/repo` for the other agents it finds on your machine:
 
 | Agent | Type | How it opens | Tokens for the report |
 |---|---|---|---|
@@ -133,6 +141,7 @@ it can do, and that only opens the read-only window. Works for the opencode and 
 - `/repo`, "repo check" or "check the repos" in Claude Code opens the window (other agents: see above).
 - `repo-status` opens it from a terminal or the app menu.
 - `repo-status --text` prints the same report as plain text, handy over SSH (`--text Friends`: one tab).
+- `repo-status --help` lists every command.
 
 ## Limits
 

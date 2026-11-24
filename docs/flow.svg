@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="860" height="300" viewBox="0 0 860 300" font-family="DejaVu Sans, Verdana, sans-serif">
-  <title>How /repo works: a script does the work, Claude only says one line</title>
+  <title>How /repo works: repo-status does the work, Claude only says one line</title>
   <defs><marker id="a" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0L10 5L0 10z" fill="#768390"/></marker></defs>
   <rect width="860" height="300" rx="14" fill="#1c2128"/>
 
@@ -10,7 +10,7 @@
   <rect x="240" y="40" width="150" height="90" rx="10" fill="#2d333b" stroke="#57ab5a" stroke-width="2"/>
   <text x="315" y="72" font-size="13" fill="#768390" text-anchor="middle">tiny hook</text>
   <text x="315" y="96" font-size="12" fill="#cdd9e5" text-anchor="middle">sees "/repo",</text>
-  <text x="315" y="114" font-size="12" fill="#cdd9e5" text-anchor="middle">starts the script</text>
+  <text x="315" y="114" font-size="12" fill="#cdd9e5" text-anchor="middle">starts repo-status</text>
 
   <rect x="460" y="40" width="170" height="90" rx="10" fill="#2d333b" stroke="#57ab5a" stroke-width="2"/>
   <text x="545" y="72" font-size="13" fill="#768390" text-anchor="middle">repo-status</text>
