@@ -19,6 +19,19 @@ tag, and a short to-do — all in one place, refreshed every time you open it.
 **The AI never sees any of it.** A hook opens the window the moment you hit Enter. The prompt is blocked
 before it reaches the model. No turn, no reply, no tokens. The repo info is free and always will be.
 
+## Now on Windows too
+
+**v0.6.0** brings slashRepo to Windows 10/11: one self-contained `.exe`, nothing else to install.
+Same window, same tabs, same `/repo`, same zero tokens.
+
+![The Repo Status window on Windows, checking GitHub, GitLab and Codeberg repos](docs/window-windows.png)
+
+*The real thing: the exe took this picture of itself on a GitHub Windows runner (no GPU needed).*
+
+Grab `repo-status-x86_64-windows.exe` from the [latest release](https://github.com/LudaLunizz/slashRepo/releases/latest),
+double-click it, done. Run it once with `install` to get the Start Menu entry and `/repo` in your agents
+([details](#30-second-install)).
+
 ## Why you want this
 
 | Without slashRepo | With slashRepo |
