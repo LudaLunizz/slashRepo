@@ -3,7 +3,8 @@
 //! `sort = stars` (or forks) inside a tab sorts it. Every edit works on the file's lines,
 //! so comments and hand-made order survive.
 
-use std::path::PathBuf;
+use std::io::{Error, ErrorKind};
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -230,9 +231,19 @@ pub fn path() -> PathBuf {
     crate::home().join(".config/slashrepo/repos")
 }
 
-pub fn read_lines() -> Option<Vec<String>> {
-    let text = std::fs::read_to_string(path()).ok()?;
-    Some(text.lines().map(|l| format!("{l}\n")).collect())
+/// The file's lines; `Ok(None)` only when there is no file. Any other failure (no permission,
+/// not UTF-8, a directory) is an error, so an edit never mistakes a file it cannot read for a
+/// missing one and writes over it.
+fn read_lines_at(p: &Path) -> std::io::Result<Option<Vec<String>>> {
+    match std::fs::read_to_string(p) {
+        Ok(text) => Ok(Some(text.lines().map(|l| format!("{l}\n")).collect())),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+pub fn read_lines() -> std::io::Result<Option<Vec<String>>> {
+    read_lines_at(&path())
 }
 
 /// Your own non-fork, non-archived repos (newest 20): the list when there is no config file.
@@ -247,16 +258,22 @@ pub fn own_repos() -> Vec<String> {
     }
 }
 
-pub fn load_tabs() -> Vec<Tab> {
+pub fn load_tabs() -> Result<Vec<Tab>, String> {
     match read_lines() {
-        Some(lines) => parse(&lines),
-        None => vec![Tab { name: DEFAULT_TAB.into(), repos: own_repos(), sort: Sort::Mine }],
+        Ok(Some(lines)) => Ok(parse(&lines)),
+        Ok(None) => Ok(vec![Tab { name: DEFAULT_TAB.into(), repos: own_repos(), sort: Sort::Mine }]),
+        Err(e) => Err(format!("Could not read {}: {e}", path().display())),
     }
 }
 
-/// Apply change to the config file; a missing file starts from own_repos().
+/// Apply change to the config file; a missing file starts from own_repos(). A file that exists
+/// but cannot be read stops the edit and is left as it is.
 pub fn edit(change: impl FnOnce(&[String]) -> Vec<String>) -> std::io::Result<()> {
-    let lines = read_lines().unwrap_or_else(|| own_repos().into_iter().map(|r| format!("{r}\n")).collect());
+    let lines = match read_lines() {
+        Ok(Some(lines)) => lines,
+        Ok(None) => own_repos().into_iter().map(|r| format!("{r}\n")).collect(),
+        Err(e) => return Err(Error::new(e.kind(), format!("could not read it, left untouched ({e})"))),
+    };
     let lines = change(&lines);
     crate::write_atomic(&path(), lines.concat().as_bytes(), 0o644)
 }
@@ -290,6 +307,26 @@ mod tests {
 
     fn old() -> Vec<String> {
         v(&["me/a  # keep this comment\n", "me/b\n", "\n", "[ArtCraft]\n", "sort = stars\n", "st/x\n", "st/y\n"])
+    }
+
+    #[test]
+    fn only_a_missing_file_counts_as_missing() {
+        let dir = std::env::temp_dir().join(format!("slashrepo-config-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // no file: the one case that starts from the generated list
+        assert_eq!(read_lines_at(&dir.join("none")).unwrap(), None);
+        // a readable file, comments and all
+        let good = dir.join("good");
+        std::fs::write(&good, "me/a # x\n\n").unwrap();
+        assert_eq!(read_lines_at(&good).unwrap(), Some(v(&["me/a # x\n", "\n"])));
+        // a file that is there but not UTF-8 (a Latin-1 comment) is an error, not "missing"
+        let latin = dir.join("latin");
+        std::fs::write(&latin, b"me/a # caf\xe9\n").unwrap();
+        assert!(read_lines_at(&latin).is_err());
+        // so is anything else that cannot be read as a file
+        assert!(read_lines_at(&dir).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

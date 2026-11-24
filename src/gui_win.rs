@@ -60,8 +60,13 @@ struct App {
 impl App {
     fn new() -> Self {
         let (send, done) = mpsc::channel();
+        // a repos file that cannot be read shows why and starts with no tabs; nothing is rebuilt from it
+        let (tabs, error) = match config::load_tabs() {
+            Ok(tabs) => (tabs, None),
+            Err(e) => (Vec::new(), Some(e)),
+        };
         App {
-            tabs: config::load_tabs(),
+            tabs,
             current: 0,
             cards: HashMap::new(),
             busy: HashSet::new(),
@@ -72,7 +77,7 @@ impl App {
             bad_entry: None,
             new_tab: String::new(),
             confirm: None,
-            error: None,
+            error,
             snapshot: std::env::var_os("SLASHREPO_SNAPSHOT").map(Into::into),
             idle_since: None,
             shot_asked: false,
@@ -119,7 +124,7 @@ impl App {
             Action::Refresh => self.cards.clear(),
             Action::Edit(change) => {
                 if let Err(e) = config::edit(change) {
-                    self.error = Some(format!("Could not save {}: {e}", config::path().display()));
+                    self.error = Some(format!("Could not change {}: {e}", config::path().display()));
                     return;
                 }
                 self.error = None;
@@ -127,16 +132,24 @@ impl App {
             Action::NewTab(name) => {
                 let n = name.clone();
                 if let Err(e) = config::edit(move |l| config::add_tab(l, &n)) {
-                    self.error = Some(format!("Could not save {}: {e}", config::path().display()));
+                    self.error = Some(format!("Could not change {}: {e}", config::path().display()));
                     return;
                 }
-                self.tabs = config::load_tabs();
+                self.reload_tabs();
                 self.current = self.tabs.iter().position(|t| t.name == name).unwrap_or(self.current);
                 return;
             }
         }
-        self.tabs = config::load_tabs();
+        self.reload_tabs();
         self.current = self.current.min(self.tabs.len().saturating_sub(1));
+    }
+
+    /// Read the repos file again; if it cannot be read the old tabs stay and the error shows.
+    fn reload_tabs(&mut self) {
+        match config::load_tabs() {
+            Ok(tabs) => self.tabs = tabs,
+            Err(e) => self.error = Some(e),
+        }
     }
 
     fn worst(&self, tab: &Tab) -> Light {

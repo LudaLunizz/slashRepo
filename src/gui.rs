@@ -47,17 +47,18 @@ struct Ui {
     building: Cell<bool>,
 }
 
+/// A red line in the status bar.
+fn show_error(ui: &Ui, msg: &str) {
+    ui.status.set_markup(&format!("<span foreground='{}'>{}</span>", colour(Light::Red), esc(msg)));
+}
+
 /// Run an edit, then redraw, outside the signal of the widget the redraw destroys.
 fn later(ui: &Weak<Ui>, change: impl FnOnce(&[String]) -> Vec<String> + 'static) {
     let ui = ui.clone();
     glib::idle_add_local_once(move || {
         if let Some(ui) = ui.upgrade() {
             if let Err(e) = config::edit(change) {
-                ui.status.set_markup(&format!(
-                    "<span foreground='{}'>{}</span>",
-                    colour(Light::Red),
-                    esc(&format!("Could not save {}: {e}", config::path().display()))
-                ));
+                show_error(&ui, &format!("Could not change {}: {e}", config::path().display()));
                 return;
             }
             render(&ui);
@@ -237,12 +238,20 @@ fn page(ui: &Rc<Ui>, tab: &Tab) -> (gtk::Box, gtk::Label) {
 }
 
 fn render(ui: &Rc<Ui>) {
+    // a file that cannot be read keeps the old view and says why; nothing is rebuilt from it
+    let tabs = match config::load_tabs() {
+        Ok(tabs) => tabs,
+        Err(e) => {
+            show_error(ui, &e);
+            ui.refresh.set_sensitive(true);
+            return;
+        }
+    };
     ui.building.set(true);
     let current = ui.book.current_page().unwrap_or(0);
     while ui.book.n_pages() > 0 {
         ui.book.remove_page(None);
     }
-    let tabs = config::load_tabs();
     for tab in &tabs {
         let (child, lab) = page(ui, tab);
         ui.book.append_page(&child, Some(&lab));
@@ -372,11 +381,12 @@ fn activate(app: &gtk::Application) {
         e.set_text("");
         new_tab_btn.popdown();
         let n = name.clone();
-        if config::edit(move |l| config::add_tab(l, &n)).is_err() {
+        if let Err(e) = config::edit(move |l| config::add_tab(l, &n)) {
+            show_error(&ui, &format!("Could not change {}: {e}", config::path().display()));
             return;
         }
         render(&ui);
-        if let Some(i) = config::load_tabs().iter().position(|t| t.name == name) {
+        if let Some(i) = config::load_tabs().unwrap_or_default().iter().position(|t| t.name == name) {
             ui.book.set_current_page(Some(i as u32));
         }
     });
