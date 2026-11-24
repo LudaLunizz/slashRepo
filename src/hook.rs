@@ -5,6 +5,7 @@
 //! after the window is started: Claude Code then drops it, so nothing reaches the model and the
 //! report costs 0 tokens (the reason text is shown to you only). A longer prompt that merely
 //! mentions it still opens the window but goes through, so the rest of what you wrote isn't lost.
+//! If the window could not be started the prompt goes through too, so the `/repo` command still runs.
 
 use std::io::Read;
 use std::path::Path;
@@ -14,7 +15,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 static OPENS: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?im)repos? check|check (up on )?(the |my )?repos\b|^ */repo( |$)").unwrap());
+    LazyLock::new(|| Regex::new(r"(?im)\brepos? check\b|\bcheck (up on )?(the |my )?repos\b|^ */repo( |$)").unwrap());
 static ONLY: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)^\s*(/repo|(please )?(repos? check|check (up on )?(the |my )?repos)( now| please)?[.!]?)\s*$")
         .unwrap()
@@ -28,10 +29,15 @@ pub fn decide(prompt: &str) -> (bool, bool) {
     (open, open && ONLY.is_match(prompt))
 }
 
-/// Start the window detached from the hook (own session), like `setsid -f`. False if it could not.
+/// Start the window detached from the hook (own session), like `setsid -f`. False if it could not:
+/// `setsid -f` reports success even when the program is missing, so that is looked at first.
 #[cfg(unix)]
 pub fn open(window: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
     use std::process::Command;
+    if !std::fs::metadata(window).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0) {
+        return false;
+    }
     let null = || Stdio::null();
     let spawned = Command::new("setsid").arg("-f").arg(window).stdin(null()).stdout(null()).stderr(null()).status();
     if spawned.is_ok_and(|s| s.success()) {
@@ -72,10 +78,9 @@ pub fn run(window: &Path) {
         .and_then(|v| v.get("prompt")?.as_str().map(String::from))
         .unwrap_or_default();
     let (open_it, block) = decide(&prompt);
-    if open_it {
-        open(window);
-    }
-    if block {
+    let opened = open_it && open(window);
+    // never swallow a prompt for a window that is not there: then the /repo command gets its turn
+    if block && opened {
         println!("{BLOCK}");
     }
 }
@@ -94,7 +99,17 @@ mod tests {
         for p in ["/repo and then fix the tab bug", "do a repo check, then bump the version", "hi\n/repo"] {
             assert_eq!(decide(p), (true, false), "{p}");
         }
-        for p in ["fix the bug in repository.py", "hello", "see /repository", ""] {
+        for p in [
+            "fix the bug in repository.py",
+            "hello",
+            "see /repository",
+            "",
+            // the phrases inside other words
+            "run the monorepo check",
+            "repo checkout is broken",
+            "I recheck repos nightly",
+            "a megarepo check",
+        ] {
             assert_eq!(decide(p), (false, false), "{p}");
         }
     }

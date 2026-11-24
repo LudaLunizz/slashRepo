@@ -158,6 +158,50 @@ fn hook_opens_the_window_and_blocks_only_the_bare_command() {
 }
 
 #[test]
+fn hook_lets_the_prompt_through_when_the_window_cannot_start() {
+    let h = TempHome::new("hook-nostart");
+    let gone = h.path("no-such-program");
+    let bare = serde_json::json!({"prompt": "/repo"}).to_string();
+    let out = h.run(&["hook"], Some(&bare), &[("REPO_STATUS", &gone)]);
+    assert!(out.status.success());
+    assert!(out.stdout.is_empty(), "a prompt was blocked for a window that is not there: {:?}", out.stdout);
+    // a file that is there but cannot run
+    #[cfg(unix)]
+    {
+        let plain = h.path("plain-file");
+        std::fs::write(&plain, "not a program").unwrap();
+        let out = h.run(&["hook"], Some(&bare), &[("REPO_STATUS", &plain)]);
+        assert!(out.status.success() && out.stdout.is_empty(), "{:?}", out.stdout);
+    }
+}
+
+#[test]
+fn hook_ignores_the_phrases_inside_other_words() {
+    let h = TempHome::new("hook-words");
+    let opened = h.path("opened");
+    #[cfg(unix)]
+    let fake = {
+        let fake = h.path("fake");
+        std::fs::write(&fake, format!("#!/bin/sh\ntouch '{}'\n", opened.display())).unwrap();
+        std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        fake
+    };
+    #[cfg(windows)]
+    let fake = {
+        let fake = h.path("fake.bat");
+        std::fs::write(&fake, format!("@echo off\r\ntype nul > \"{}\"\r\n", opened.display())).unwrap();
+        fake
+    };
+    for prompt in ["run the monorepo check", "repo checkout is broken", "I recheck the repos nightly"] {
+        let input = serde_json::json!({"prompt": prompt}).to_string();
+        let out = h.run(&["hook"], Some(&input), &[("REPO_STATUS", &fake)]);
+        assert!(out.status.success() && out.stdout.is_empty(), "{prompt}");
+    }
+    std::thread::sleep(Duration::from_millis(800));
+    assert!(!opened.exists(), "a window was started for words inside other words");
+}
+
+#[test]
 fn install_sets_up_each_agent_present_and_only_those() {
     let h = TempHome::new("install");
     for d in [".claude", ".config/opencode", ".codex", ".gemini/antigravity", ".local/bin"] {
