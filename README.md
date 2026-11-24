@@ -13,8 +13,8 @@ slashRepo does exactly that. Type `/repo`. A window appears:
 ![The Repo Status window, with three example repos: green, orange and red](docs/window.svg)
 
 Every repo gets a colored dot: 🟢 all clear, 🟠 something needs you, 🔴 CI is broken or there is a
-security alert. Latest release, open PRs, issues, Dependabot alerts, CI status, commits since the last
-tag, and a short to-do — all in one place, refreshed every time you open it.
+security alert. Latest release and the commits since it, open PRs, issues, CI status, GitHub's
+Dependabot alerts, and a short to-do — all in one place, refreshed every time you open it.
 
 **The AI never sees any of it.** A hook opens the window the moment you hit Enter. The prompt is blocked
 before it reaches the model. No turn, no reply, no tokens. The repo info is free and always will be.
@@ -69,17 +69,19 @@ Then it hooks into every agent it finds — done.
 | Agent | Command | Tokens for the report |
 |---|---|---|
 | **Claude Code** | `/repo` or "repo check" | **0** — prompt never reaches the model |
-| **opencode** | `/repo` | **0** |
-| **Gemini CLI** | `/repo` | **0** |
+| **opencode** | `/repo` | **0** (a few for the one-line reply) |
+| **Gemini CLI** | `/repo` | **0** (a few for the one-line reply) |
 | **Codex** | `$repo` | **0** (a few for one command) |
 | **Antigravity** | `/repo` | **0** (a few for one command) |
 
-One install, all agents. Runs in a sandbox too — just point it at a trigger file.
+One install, all agents. The report itself never reaches the model in any of them. Only Claude Code can
+drop the prompt before the model sees it, so only there nothing at all is spent; the others still take one
+short turn to run the command. Runs in a sandbox too: see [Agents in a sandbox](#agents-in-a-sandbox).
 
 ## Tabs: your repos, your way
 
-Group repos into tabs. Drag them around. Sort by stars or forks. Mix GitHub, GitLab and Codeberg
-in the same view — public repos need no login, private ones just need a read-only token.
+Group repos into tabs. Move them with the ▲▼ buttons. Sort by stars or forks. Mix GitHub, GitLab and
+Codeberg in the same view; [private repos and other hosts](#private-repos-and-other-hosts) need a token.
 
 ```ini
 [Mine]
@@ -98,12 +100,74 @@ The file is `~/.config/slashrepo/repos` (Windows: `%APPDATA%\slashRepo\repos`).
 
 ## What you get per repo
 
-- Latest release tag and how many commits since
+- Latest release and how many commits since it
 - CI status on the default branch
-- Open PRs (or MRs on GitLab) and issues
-- Dependabot / security alerts
+- Open PRs (or MRs on GitLab) and issues (up to 30 of each are listed)
+- Dependabot / security alerts (GitHub only)
 - A to-do line so you know what to do next
 - Click any line to open it in your browser
+
+## Private repos and other hosts
+
+- **GitHub** goes through your `gh` login, for public repos too, so `gh` must be installed and logged in.
+  There is no token variable.
+- **GitLab** public projects need nothing. For a private one set `GITLAB_TOKEN` (a read-only token is
+  enough). For a self-hosted GitLab also set `GITLAB_HOST=gitlab.example.org` (the host name only) and
+  list the project as `gitlab.example.org/group/project`. One host gets the token; the token is never
+  sent anywhere else.
+- **Codeberg** public repos need nothing. For a private one set `CODEBERG_TOKEN`; it goes to
+  codeberg.org only. Self-hosted Forgejo, Gitea and Bitbucket are not supported.
+
+Set the variables in the environment that starts the window (your login session, or the shell that
+runs the agent).
+
+## Agents in a sandbox
+
+Some agents run commands in a sandbox that cannot see `repo-status` or open a window. On Linux, give
+them a trigger file instead:
+
+```sh
+./install.sh --trigger /home/you/.slashrepo-open     # an absolute path; or: repo-status install --trigger FILE
+```
+
+That adds a systemd user unit (`slashrepo-trigger.path`) which opens the window whenever the file is
+written. Give the sandbox write access to that one file and set `SLASHREPO_TRIGGER=` to its path inside
+it. The opencode and Gemini CLI commands then write the file when they cannot reach `repo-status`. The
+Codex and Antigravity skill has no such fallback: ask it to run the command outside the sandbox. All the
+sandbox gains is the ability to write one file, which opens a read-only window. Windows has no trigger
+file (`--trigger` is Linux only).
+
+## Limits
+
+- **The hook** opens the window when a prompt says `repo check` or `check the repos` as whole words, or has
+  a line that starts with `/repo`. A prompt that is only that is blocked; a longer one goes through to the
+  model with the window opened beside it. If the window cannot be started, nothing is blocked.
+- **Lists are capped:** up to 30 open PRs and 30 issues per repo, with an "and N more" line for issues.
+- **Hosts:** GitHub, GitLab (one authenticated host) and codeberg.org. Dependabot alerts exist on GitHub only.
+- **Platforms:** Linux x86_64 and Windows 10/11 x86_64. The prebuilt Linux binary is built on Ubuntu 24.04,
+  so it needs glibc 2.39 or newer; older systems build from source (Rust and the GTK 4 dev files).
+  macOS: not yet.
+- **The checksum** next to a prebuilt binary comes from the same release page. It catches a damaged
+  download, not a compromised release.
+- **Read-only by behaviour:** it never writes to a forge, but it uses whatever your `gh` login or token
+  can do. Use read-only tokens.
+
+## What install touches
+
+On Linux: `~/.local/bin/repo-status`, a desktop file and an icon (`io.github.ludalunizz.SlashRepo.*`
+under `~/.local/share`), and for each agent it finds:
+
+| Agent | File |
+|---|---|
+| Claude Code | `~/.claude/commands/repo.md`, a hook in `~/.claude/settings.json` (copy of the old file: `settings.json.bak-slashrepo`) |
+| opencode | `~/.config/opencode/command/repo.md` |
+| Gemini CLI | `~/.gemini/commands/repo.toml` |
+| Codex | `~/.agents/skills/repo/SKILL.md` |
+| Antigravity | `~/.gemini/config/skills/repo/SKILL.md` |
+
+With `--trigger`: two units in `~/.config/systemd/user/` and the trigger file. On Windows: the exe in
+`%LOCALAPPDATA%\Programs\slashRepo`, a Start Menu entry, and the same agent files under your user folder.
+`repo-status uninstall` removes exactly these (your repo list, the trigger file and any file of yours stay).
 
 ## The fine print
 
@@ -117,7 +181,7 @@ The file is `~/.config/slashrepo/repos` (Windows: `%APPDATA%\slashRepo\repos`).
   replaces files that call `repo-status`), keeps a copy of `settings.json` from before each change, and
   says what it did per agent. `repo-status uninstall` takes it all out again (hook, command files,
   menu entry, program) and keeps your repo list.
-- **Read-only.** It looks at your repos. It never touches them.
+- **Read-only.** It looks at your repos and changes nothing on them.
 - **MIT licensed.** Fork it, ship it, do what you want.
 
 ---
