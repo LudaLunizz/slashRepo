@@ -14,6 +14,7 @@ const GEMINI_CMD: &str = include_str!("../commands/gemini/repo.toml");
 const SKILL: &str = include_str!("../skills/repo/SKILL.md");
 const TRIGGER_PATH: &str = include_str!("../systemd/slashrepo-trigger.path");
 const TRIGGER_SERVICE: &str = include_str!("../systemd/slashrepo-trigger.service");
+const ICON: &str = include_str!("../data/io.github.ludalunizz.SlashRepo.svg");
 
 type Res = Result<(), String>;
 
@@ -126,15 +127,21 @@ pub fn run(trigger_file: Option<&Path>) -> Res {
         // temp file + rename: works while the old binary is running
         write_atomic(&bin, &data, 0o755).map_err(|e| format!("{}: {e}", bin.display()))?;
     }
+    // icon + desktop file named after the app id: GNOME matches the window to it (else a gear)
+    put(&h.join(format!(".local/share/icons/hicolor/scalable/apps/{}.svg", crate::APP_ID)), ICON)?;
     put(
-        &h.join(".local/share/applications/repo-status.desktop"),
+        &h.join(format!(".local/share/applications/{}.desktop", crate::APP_ID)),
         &format!(
             "[Desktop Entry]\nType=Application\nName=Repo Status\n\
              Comment=Where each of your repos stands: release, CI, issues, PRs, to-dos\n\
-             Exec={}\nIcon=utilities-system-monitor\nCategories=Development;\n",
-            desktop_exec(&bin)
+             Exec={}\nIcon={}\nStartupWMClass={}\nCategories=Development;\n",
+            desktop_exec(&bin),
+            crate::APP_ID,
+            crate::APP_ID
         ),
     )?;
+    // the old name (up to 0.5.1) would show a second "Repo Status" in the app menu
+    let _ = std::fs::remove_file(h.join(".local/share/applications/repo-status.desktop"));
     println!("installed: {} (window, app menu)", bin.display());
     if !has("gh") {
         println!("note: gh is not installed; GitHub repos need it (logged in). GitLab and Codeberg work without.");

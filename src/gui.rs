@@ -330,6 +330,7 @@ fn activate(app: &gtk::Application) {
     let win = gtk::ApplicationWindow::builder()
         .application(app)
         .title("Repo Status")
+        .icon_name(crate::APP_ID)
         .default_width(900)
         .default_height(760)
         .build();
@@ -386,7 +387,7 @@ fn activate(app: &gtk::Application) {
 }
 
 pub fn run() -> ExitCode {
-    let app = gtk::Application::builder().application_id("io.github.ludalunizz.SlashRepo").build();
+    let app = gtk::Application::builder().application_id(crate::APP_ID).build();
     app.connect_activate(activate);
     let code = app.run_with_args::<&str>(&[]);
     if code == glib::ExitCode::SUCCESS { ExitCode::SUCCESS } else { ExitCode::FAILURE }
