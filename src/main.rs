@@ -161,12 +161,19 @@ fn main() -> ExitCode {
         ["install", "--trigger", f] => {
             install::run(Some(Path::new(f))).map_or_else(|e| fail(&e), |()| ExitCode::SUCCESS)
         }
-        ["--text", rest @ ..] if rest.len() <= 1 => {
-            print!("{}", report::text_mode(&config::load_tabs(), rest.first().copied()));
-            ExitCode::SUCCESS
-        }
+        ["--text", rest @ ..] if rest.len() <= 1 => match config::load_tabs() {
+            Ok(tabs) => {
+                print!("{}", report::text_mode(&tabs, rest.first().copied()));
+                ExitCode::SUCCESS
+            }
+            Err(e) => fail(&e),
+        },
         ["--tabs"] => {
-            for tab in config::load_tabs() {
+            let tabs = match config::load_tabs() {
+                Ok(tabs) => tabs,
+                Err(e) => return fail(&e),
+            };
+            for tab in tabs {
                 let sort =
                     if tab.sort == Sort::Mine { String::new() } else { format!("  sort = {}", tab.sort.as_str()) };
                 println!("[{}]{sort}", tab.name);

@@ -89,6 +89,31 @@ fn flags_edit_the_real_file() {
 }
 
 #[test]
+fn a_repos_file_that_cannot_be_read_is_never_overwritten() {
+    let h = TempHome::new("unreadable");
+    let cfg = h.path(CONFIG);
+    std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+    // a hand-edited file with a Latin-1 comment: there, but not UTF-8
+    let mine: &[u8] = b"me/a # caf\xe9\n[Friends]\nst/x\n";
+    std::fs::write(&cfg, mine).unwrap();
+    for args in
+        [&["--add", "me/new"][..], &["--remove", "me/a"], &["--remove-tab", "Friends"], &["--sort", "Friends", "stars"]]
+    {
+        let out = h.run(args, None, &[]);
+        assert!(!out.status.success(), "{args:?} must fail");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("left untouched"), "{args:?}: {:?}", out.stderr);
+        assert_eq!(std::fs::read(&cfg).unwrap(), mine, "{args:?} changed the file");
+    }
+    // reading says why instead of listing a made-up default
+    for args in [&["--tabs"][..], &["--text"]] {
+        let out = h.run(args, None, &[]);
+        assert!(!out.status.success());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("Could not read"));
+        assert!(out.stdout.is_empty());
+    }
+}
+
+#[test]
 fn hook_opens_the_window_and_blocks_only_the_bare_command() {
     let h = TempHome::new("hook");
     let opened = h.path("opened");
