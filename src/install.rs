@@ -29,6 +29,57 @@ pub fn bin_path(h: &Path) -> PathBuf {
     }
 }
 
+/// The command and skill files `install` writes for each agent (name, file).
+pub fn agent_files(h: &Path) -> [(&'static str, PathBuf); 5] {
+    [
+        ("Claude Code", h.join(".claude/commands/repo.md")),
+        ("opencode", h.join(".config/opencode/command/repo.md")),
+        ("Gemini CLI", h.join(".gemini/commands/repo.toml")),
+        ("Codex", h.join(".agents/skills/repo/SKILL.md")),
+        ("Antigravity", h.join(".gemini/config/skills/repo/SKILL.md")),
+    ]
+}
+
+pub fn claude_settings(h: &Path) -> PathBuf {
+    h.join(".claude/settings.json")
+}
+
+/// The copy of settings.json made before `install` or `uninstall` changes it.
+pub fn settings_backup(h: &Path) -> PathBuf {
+    h.join(".claude/settings.json.bak-slashrepo")
+}
+
+/// The 0.4.x shell hook, replaced by `repo-status hook`.
+pub fn old_hook(h: &Path) -> PathBuf {
+    h.join(".local/bin/repo-status-hook")
+}
+
+/// The command `install` puts in the Claude Code hook.
+pub fn hook_command(bin: &Path) -> String {
+    format!("{} hook", shell_path(bin))
+}
+
+/// Where the systemd units of `--trigger` go (Linux).
+pub fn units_dir(h: &Path) -> PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME").map_or_else(|| h.join(".config"), PathBuf::from).join("systemd/user")
+}
+
+/// The Start Menu entry (Windows).
+pub fn start_menu_link(h: &Path) -> PathBuf {
+    let appdata = std::env::var_os("APPDATA").filter(|v| !v.is_empty());
+    appdata
+        .map_or_else(|| h.join("AppData/Roaming"), PathBuf::from)
+        .join("Microsoft/Windows/Start Menu/Programs/Repo Status.lnk")
+}
+
+/// The desktop file and the icon (Linux).
+pub fn desktop_files(h: &Path) -> [PathBuf; 2] {
+    [
+        h.join(format!(".local/share/applications/{}.desktop", crate::APP_ID)),
+        h.join(format!(".local/share/icons/hicolor/scalable/apps/{}.svg", crate::APP_ID)),
+    ]
+}
+
 fn local_appdata(h: &Path) -> PathBuf {
     std::env::var_os("LOCALAPPDATA").filter(|v| !v.is_empty()).map_or_else(|| h.join("AppData/Local"), PathBuf::from)
 }
@@ -130,33 +181,33 @@ pub fn add_hook(settings: &mut Value, command: &str, old: &str) -> Res {
 /// broken one changes nothing; it keeps its mode and symlink, and a backup of the state before this
 /// change sits next to it.
 fn claude(bin: &Path, h: &Path) -> Step {
-    let dir = h.join(".claude");
     let cmd = if cfg!(windows) {
         CLAUDE_CMD.replace("~/.local/bin/repo-status", "repo-status.exe")
     } else {
         CLAUDE_CMD.into()
     };
-    let settings = dir.join("settings.json");
+    let settings = claude_settings(h);
     let (text, existed) = match std::fs::read_to_string(&settings) {
         Ok(t) => (t, true),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => ("{}".to_string(), false),
         Err(e) => return Err(format!("{}: {e}", settings.display())),
     };
     let mut v: Value = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", settings.display()))?;
-    let old_hook = h.join(".local/bin/repo-status-hook");
-    add_hook(&mut v, &format!("{} hook", shell_path(bin)), &old_hook.to_string_lossy())?;
+    let old = old_hook(h);
+    add_hook(&mut v, &hook_command(bin), &old.to_string_lossy())?;
     let out = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())? + "\n";
 
     let mut said = String::from("/repo");
-    if let Put::Kept = put_ours(&dir.join("commands/repo.md"), &cmd)? {
+    let command_file = &agent_files(h)[0].1;
+    if let Put::Kept = put_ours(command_file, &cmd)? {
         said = format!(
             "kept your own {} (it does not call repo-status); the hook still opens the window",
-            dir.join("commands/repo.md").display()
+            command_file.display()
         );
     }
     if out != text {
         if existed {
-            let backup = dir.join("settings.json.bak-slashrepo");
+            let backup = settings_backup(h);
             let mode = mode_of(&settings).unwrap_or(0o644);
             write_atomic(&backup, text.as_bytes(), mode).map_err(|e| format!("{}: {e}", backup.display()))?;
             said += &format!("  (settings backup: {})", backup.display());
@@ -165,8 +216,8 @@ fn claude(bin: &Path, h: &Path) -> Step {
         write_atomic_keep(&settings, out.as_bytes(), 0o644).map_err(|e| format!("{}: {e}", settings.display()))?;
     }
     // the shell hook of 0.4.x is replaced by `repo-status hook`
-    if std::fs::read_to_string(&old_hook).is_ok_and(|t| t.contains("Repo Status")) {
-        let _ = std::fs::remove_file(&old_hook);
+    if std::fs::read_to_string(&old).is_ok_and(|t| t.contains("Repo Status")) {
+        let _ = std::fs::remove_file(&old);
     }
     Ok(said)
 }
@@ -179,8 +230,7 @@ fn trigger(file: &Path, h: &Path) -> Step {
     if !file.is_absolute() || f.contains('\n') {
         return Err("--trigger needs an absolute path without newlines".into());
     }
-    let config = std::env::var_os("XDG_CONFIG_HOME").map_or_else(|| h.join(".config"), PathBuf::from);
-    let units = config.join("systemd/user");
+    let units = units_dir(h);
     if !file.exists() {
         put(file, "")?;
     }
@@ -224,9 +274,10 @@ fn copy_self(bin: &Path) -> Res {
 
 /// Linux: icon + desktop file named after the app id; GNOME matches the window to it (else a gear).
 fn desktop_entry(bin: &Path, h: &Path) -> Res {
-    put(&h.join(format!(".local/share/icons/hicolor/scalable/apps/{}.svg", crate::APP_ID)), ICON)?;
+    let [desktop, icon] = desktop_files(h);
+    put(&icon, ICON)?;
     put(
-        &h.join(format!(".local/share/applications/{}.desktop", crate::APP_ID)),
+        &desktop,
         &format!(
             "[Desktop Entry]\nType=Application\nName=Repo Status\n\
              Comment=Where each of your repos stands: release, CI, issues, PRs, to-dos\n\
@@ -244,11 +295,9 @@ fn desktop_entry(bin: &Path, h: &Path) -> Res {
 /// Windows: "Repo Status" in the Start Menu (a shortcut made by PowerShell; paths go in through the
 /// environment, so nothing needs quoting). The icon is inside the exe.
 fn start_menu_entry(bin: &Path, h: &Path) -> Res {
-    let appdata = std::env::var_os("APPDATA").filter(|v| !v.is_empty());
-    let programs =
-        appdata.map_or_else(|| h.join("AppData/Roaming"), PathBuf::from).join("Microsoft/Windows/Start Menu/Programs");
-    std::fs::create_dir_all(&programs).map_err(|e| format!("{}: {e}", programs.display()))?;
-    let lnk = programs.join("Repo Status.lnk");
+    let lnk = start_menu_link(h);
+    let programs = lnk.parent().unwrap_or(h);
+    std::fs::create_dir_all(programs).map_err(|e| format!("{}: {e}", programs.display()))?;
     let script = "$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:SLASHREPO_LNK); \
                   $s.TargetPath = $env:SLASHREPO_EXE; $s.Description = 'Where each of your repos stands'; $s.Save()";
     let ok = crate::command("powershell")
@@ -314,6 +363,7 @@ pub fn run(trigger_file: Option<&Path>) -> Res {
         if cfg!(windows) { windows_agent_files(&bin) } else { (OPENCODE_CMD.into(), GEMINI_CMD.into(), SKILL.into()) };
 
     // Every agent is a step of its own: one that fails does not stop the others.
+    let files = agent_files(&h);
     let mut steps: Vec<(&str, Step)> = Vec::new();
     // Claude Code: /repo command + a UserPromptSubmit hook that opens the window (0 tokens).
     if h.join(".claude").is_dir() || has("claude") {
@@ -321,19 +371,18 @@ pub fn run(trigger_file: Option<&Path>) -> Res {
     }
     // opencode: the command runs repo-status itself (0 tokens).
     if h.join(".config/opencode").is_dir() || has("opencode") {
-        steps.push(("opencode", agent_file(&h.join(".config/opencode/command/repo.md"), &opencode_cmd, "/repo")));
+        steps.push(("opencode", agent_file(&files[1].1, &opencode_cmd, "/repo")));
     }
     // Gemini CLI: the command runs repo-status itself (asks once before it runs a shell command).
     if h.join(".gemini/settings.json").is_file() || has("gemini") {
-        steps.push(("Gemini CLI", agent_file(&h.join(".gemini/commands/repo.toml"), &gemini_cmd, "/repo")));
+        steps.push(("Gemini CLI", agent_file(&files[2].1, &gemini_cmd, "/repo")));
     }
     // Codex and Antigravity: a "repo" skill; the agent runs the one command (the report stays 0 tokens).
     if h.join(".codex").is_dir() || has("codex") {
-        let path = h.join(".agents/skills/repo/SKILL.md");
-        steps.push(("Codex", agent_file(&path, &skill, "$repo (or pick it in /skills)")));
+        steps.push(("Codex", agent_file(&files[3].1, &skill, "$repo (or pick it in /skills)")));
     }
     if h.join(".gemini/antigravity").is_dir() || h.join(".gemini/config").is_dir() || has("agy") {
-        steps.push(("Antigravity", agent_file(&h.join(".gemini/config/skills/repo/SKILL.md"), &skill, "/repo")));
+        steps.push(("Antigravity", agent_file(&files[4].1, &skill, "/repo")));
     }
     if let Some(f) = trigger_file {
         steps.push(("trigger", trigger(f, &h)));

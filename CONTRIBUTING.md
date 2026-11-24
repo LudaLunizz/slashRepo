@@ -17,6 +17,7 @@ commands; the [README](README.md) says what slashRepo does.
 | `build.rs`, `data/slashrepo.ico` | the icon inside `repo-status.exe` (when built on Windows) |
 | `src/hook.rs` | the Claude Code `UserPromptSubmit` hook: which prompts open the window |
 | `src/install.rs` | `repo-status install`: copies itself and sets up `/repo` per agent |
+| `src/uninstall.rs` | `repo-status uninstall`: removes what `install` wrote (hook, files that are ours, menu entry, binary) |
 | `commands/repo.md` | the `/repo` command for Claude Code |
 | `commands/opencode/`, `commands/gemini/` | `/repo` for opencode and Gemini CLI |
 | `systemd/` | the trigger unit for agents in a sandbox (`install.sh --trigger FILE`) |

@@ -100,6 +100,10 @@ The file is `~/.config/slashrepo/repos` (Windows: `%APPDATA%\slashRepo\repos`).
   `%LOCALAPPDATA%\Programs\slashRepo`; add that folder to your PATH to type `repo-status` anywhere.
   In PowerShell or cmd, add `| more` to `repo-status --text` (Windows doesn't wait for a windowed program);
   Git Bash needs nothing extra. The sandbox trigger (`--trigger`) is Linux only.
+- **Install and uninstall are tidy.** `install` leaves a `/repo` command or skill of your own alone (it only
+  replaces files that call `repo-status`), keeps a copy of `settings.json` from before each change, and
+  says what it did per agent. `repo-status uninstall` takes it all out again (hook, command files,
+  menu entry, program) and keeps your repo list.
 - **Read-only.** It looks at your repos. It never touches them.
 - **MIT licensed.** Fork it, ship it, do what you want.
 
