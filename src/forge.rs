@@ -33,18 +33,24 @@ pub struct RealNet {
 
 impl RealNet {
     pub fn new() -> Self {
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(60)))
-            .user_agent("slashRepo")
-            .build()
-            .new_agent();
+        let config =
+            ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(60))).user_agent("slashRepo");
+        // Windows: schannel and the Windows certificate store (no bundled roots in the exe)
+        #[cfg(windows)]
+        let config = config.tls_config(
+            ureq::tls::TlsConfig::builder()
+                .provider(ureq::tls::TlsProvider::NativeTls)
+                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                .build(),
+        );
+        let agent = config.build().new_agent();
         RealNet { agent }
     }
 }
 
 impl Net for RealNet {
     fn gh(&self, args: &[&str]) -> Res<Value> {
-        let out = std::process::Command::new("gh").args(args).output().map_err(|e| format!("gh: {e}"))?;
+        let out = crate::command("gh").args(args).output().map_err(|e| format!("gh: {e}"))?;
         if !out.status.success() {
             let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
             return Err(if err.is_empty() { "gh failed".into() } else { err });

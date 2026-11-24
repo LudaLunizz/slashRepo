@@ -1,4 +1,5 @@
 //! The built binary in a throwaway HOME: the list flags, the prompt hook and the installer.
+//! Runs on Linux and Windows (on Windows the home is USERPROFILE and the list is under APPDATA).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -14,6 +15,7 @@ impl TempHome {
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(p.join("bin")).unwrap();
         // setsid and sh only: agent CLIs on the real PATH must not count as installed
+        #[cfg(unix)]
         for tool in ["setsid", "sh", "touch"] {
             let found = ["/usr/bin", "/bin"].iter().map(|d| Path::new(d).join(tool)).find(|t| t.exists());
             std::os::unix::fs::symlink(found.unwrap(), p.join("bin").join(tool)).unwrap();
@@ -23,10 +25,23 @@ impl TempHome {
     fn path(&self, rel: &str) -> PathBuf {
         self.0.join(rel)
     }
-    /// PATH has only this HOME's bin: no agent CLIs, no gh.
+    /// PATH has only this HOME's bin: no agent CLIs, no gh. (Windows: plus System32 and
+    /// PowerShell, which the Start Menu entry needs; the rest of the environment stays, Windows
+    /// needs SystemRoot and friends.)
     fn run(&self, args: &[&str], stdin: Option<&str>, env: &[(&str, &Path)]) -> Output {
         let mut c = Command::new(BIN);
-        c.args(args).env_clear().env("HOME", &self.0).env("PATH", self.path("bin"));
+        c.args(args);
+        #[cfg(unix)]
+        c.env_clear().env("HOME", &self.0).env("PATH", self.path("bin"));
+        #[cfg(windows)]
+        {
+            let sys = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32");
+            let path = std::env::join_paths([self.path("bin"), sys.clone(), sys.join("WindowsPowerShell/v1.0")]);
+            c.env("USERPROFILE", &self.0)
+                .env("APPDATA", self.path("AppData/Roaming"))
+                .env("LOCALAPPDATA", self.path("AppData/Local"))
+                .env("PATH", path.unwrap());
+        }
         for (k, v) in env {
             c.env(k, v);
         }
@@ -47,6 +62,9 @@ impl Drop for TempHome {
     }
 }
 
+/// The repos file inside a TempHome.
+const CONFIG: &str = if cfg!(windows) { "AppData/Roaming/slashRepo/repos" } else { ".config/slashrepo/repos" };
+
 fn read(p: &Path) -> String {
     std::fs::read_to_string(p).unwrap_or_default()
 }
@@ -54,7 +72,7 @@ fn read(p: &Path) -> String {
 #[test]
 fn flags_edit_the_real_file() {
     let h = TempHome::new("flags");
-    let cfg = h.path(".config/slashrepo/repos");
+    let cfg = h.path(CONFIG);
     std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
     std::fs::write(&cfg, "me/a\n").unwrap();
     assert!(h.run(&["--add", "https://github.com/st/x", "ArtCraft"], None, &[]).status.success());
@@ -73,10 +91,20 @@ fn flags_edit_the_real_file() {
 #[test]
 fn hook_opens_the_window_and_blocks_only_the_bare_command() {
     let h = TempHome::new("hook");
-    let fake = h.path("fake");
     let opened = h.path("opened");
-    std::fs::write(&fake, format!("#!/bin/sh\ntouch '{}'\n", opened.display())).unwrap();
-    std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    #[cfg(unix)]
+    let fake = {
+        let fake = h.path("fake");
+        std::fs::write(&fake, format!("#!/bin/sh\ntouch '{}'\n", opened.display())).unwrap();
+        std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        fake
+    };
+    #[cfg(windows)]
+    let fake = {
+        let fake = h.path("fake.bat");
+        std::fs::write(&fake, format!("@echo off\r\ntype nul > \"{}\"\r\n", opened.display())).unwrap();
+        fake
+    };
     let cases = [
         (true, true, "/repo"),
         (true, true, "please check the repos"),
@@ -125,34 +153,53 @@ fn install_sets_up_each_agent_present_and_only_those() {
         let out = h.run(&["install"], None, &[]);
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     }
-    for f in [
+    #[cfg(unix)]
+    let own = [
         ".local/bin/repo-status",
         ".local/share/applications/io.github.ludalunizz.SlashRepo.desktop",
         ".local/share/icons/hicolor/scalable/apps/io.github.ludalunizz.SlashRepo.svg",
+    ];
+    #[cfg(windows)]
+    let own = [
+        "AppData/Local/Programs/slashRepo/repo-status.exe",
+        "AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Repo Status.lnk",
+    ];
+    for f in own.into_iter().chain([
         ".claude/commands/repo.md",
         ".config/opencode/command/repo.md",
         ".gemini/commands/repo.toml",
         ".agents/skills/repo/SKILL.md",
         ".gemini/config/skills/repo/SKILL.md",
         ".claude/settings.json.bak-slashrepo",
-    ] {
+    ]) {
         assert!(h.path(f).exists(), "missing {f}");
     }
     assert!(!h.path(".local/bin/repo-status-hook").exists(), "old shell hook left behind");
+    #[cfg(unix)]
     assert!(!h.path(".local/share/applications/repo-status.desktop").exists(), "old desktop file left behind");
     let v: serde_json::Value = serde_json::from_str(&read(&h.path(".claude/settings.json"))).unwrap();
     let list = v["hooks"]["UserPromptSubmit"].as_array().unwrap();
     assert_eq!(list.len(), 1, "{v}");
-    let cmd = format!("{} hook", h.path(".local/bin/repo-status").display());
-    assert_eq!(list[0]["hooks"][0]["command"], cmd.as_str());
+    let installed = h.path(own[0]);
+    #[cfg(unix)]
+    assert_eq!(list[0]["hooks"][0]["command"], format!("{} hook", installed.display()).as_str());
+    #[cfg(windows)]
+    {
+        // forward slashes (Git Bash runs Claude Code's hooks), quoted when the path needs it
+        let cmd = list[0]["hooks"][0]["command"].as_str().unwrap();
+        let fwd = installed.to_string_lossy().replace('\\', "/");
+        assert!(cmd.contains(&fwd) && cmd.ends_with(" hook") && !cmd.contains('\\'), "{cmd}");
+        let opencode = read(&h.path(".config/opencode/command/repo.md"));
+        assert!(opencode.contains(&fwd) && opencode.contains(" open"), "{opencode}");
+        assert!(read(&h.path(".agents/skills/repo/SKILL.md")).contains("& '"), "PowerShell line missing");
+    }
     assert_eq!(v["theme"], "x");
-    let installed = h.path(".local/bin/repo-status");
     assert!(Command::new(&installed).arg("--version").output().unwrap().status.success());
 
     // A machine with none of the agents gets only the window.
     let bare = TempHome::new("install-bare");
     assert!(bare.run(&["install"], None, &[]).status.success());
-    assert!(bare.path(".local/bin/repo-status").exists());
+    assert!(bare.path(own[0]).exists());
     for d in [".claude", ".config/opencode", ".gemini", ".agents", ".codex"] {
         assert!(!bare.path(d).exists(), "bare: made {d}");
     }

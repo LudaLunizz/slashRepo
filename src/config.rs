@@ -1,4 +1,4 @@
-//! The repos file (`~/.config/slashrepo/repos`): one repo per line, `#` starts a comment.
+//! The repos file (`~/.config/slashrepo/repos`, on Windows `%APPDATA%\slashRepo\repos`): one repo per line, `#` starts a comment.
 //! A `[Tab name]` line starts a tab; lines before the first one go in "My repos".
 //! `sort = stars` (or forks) inside a tab sorts it. Every edit works on the file's lines,
 //! so comments and hand-made order survive.
@@ -221,7 +221,12 @@ pub fn set_sort(lines: &[String], tab: &str, sort: Sort) -> Vec<String> {
     out
 }
 
+/// ~/.config/slashrepo/repos; on Windows %APPDATA%\slashRepo\repos.
 pub fn path() -> PathBuf {
+    if cfg!(windows) {
+        let appdata = std::env::var_os("APPDATA").filter(|v| !v.is_empty());
+        return appdata.map_or_else(|| crate::home().join("AppData/Roaming"), PathBuf::from).join("slashRepo/repos");
+    }
     crate::home().join(".config/slashrepo/repos")
 }
 
@@ -232,7 +237,7 @@ pub fn read_lines() -> Option<Vec<String>> {
 
 /// Your own non-fork, non-archived repos (newest 20): the list when there is no config file.
 pub fn own_repos() -> Vec<String> {
-    let out = std::process::Command::new("gh")
+    let out = crate::command("gh")
         .args(["repo", "list", "--source", "--no-archived", "--limit", "20"])
         .args(["--json", "nameWithOwner", "--jq", ".[].nameWithOwner"])
         .output();

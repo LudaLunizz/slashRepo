@@ -1,14 +1,20 @@
 //! repo-status: where each of your repos stands, its open issues/PRs and what to do.
 //!
 //! Read-only towards the forges (GitHub via `gh`, GitLab and Codeberg over HTTPS; no Claude, no
-//! tokens). Opens a GTK4 window; `repo-status --text` prints the same to the terminal.
+//! tokens). Opens a window (GTK 4 on Linux, egui on Windows); `repo-status --text` prints the same
+//! to the terminal.
+// Windows: a windowed program (no console window with the Repo Status window); see src/win.rs.
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod config;
 mod forge;
+#[cfg_attr(windows, path = "gui_win.rs")]
 mod gui;
 mod hook;
 mod install;
 mod report;
+#[cfg(windows)]
+mod win;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -21,6 +27,7 @@ pub const APP_ID: &str = "io.github.ludalunizz.SlashRepo";
 
 const USAGE: &str = "usage:
   repo-status                         open the window
+  repo-status open                    open the window in the background and return
   repo-status --text [TAB]            print the report (all tabs, or one)
   repo-status --tabs                  list the tabs and their repos
   repo-status --add OWNER/NAME [TAB]  add a repo (default tab: My repos; a new tab name makes the tab)
@@ -28,18 +35,36 @@ const USAGE: &str = "usage:
   repo-status --remove-tab TAB        remove a tab and its repos from the list
   repo-status --sort TAB mine|stars|forks   order of a tab
   repo-status install [--trigger FILE]    set up /repo for the coding agents on this machine
+                                      (--trigger: Linux only)
   repo-status hook                    the Claude Code prompt hook (reads the prompt on stdin)
-  repo-status --help | --version
-The list lives in ~/.config/slashrepo/repos; you may also edit it by hand.";
+  repo-status --help | --version";
 
-pub fn home() -> PathBuf {
-    std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from)
+fn usage() -> String {
+    format!("{USAGE}\nThe list lives in {}; you may also edit it by hand.", config::path().display())
 }
 
-/// Write via a temp file + rename, so a crash never leaves half a file.
+/// Your home folder: $HOME, on Windows %USERPROFILE%.
+pub fn home() -> PathBuf {
+    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var_os(var).filter(|v| !v.is_empty()).map_or_else(|| PathBuf::from("/"), PathBuf::from)
+}
+
+/// A command that never flashes a console window on Windows (the window runs `gh` without one).
+pub fn command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    #[allow(unused_mut)]
+    let mut c = std::process::Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+    }
+    c
+}
+
+/// Write via a temp file + rename, so a crash never leaves half a file. `mode` is the Unix file
+/// mode (Windows has none).
 pub fn write_atomic(path: &Path, data: &[u8], mode: u32) -> std::io::Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -48,7 +73,13 @@ pub fn write_atomic(path: &Path, data: &[u8], mode: u32) -> std::io::Result<()> 
     let tmp = path.with_file_name(name);
     let _ = std::fs::remove_file(&tmp);
     let written = (|| {
-        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(mode).open(&tmp)?;
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut opts, mode);
+        #[cfg(not(unix))]
+        let _ = mode;
+        let mut f = opts.open(&tmp)?;
         f.write_all(data)?;
         f.sync_all()?;
         std::fs::rename(&tmp, path)
@@ -97,10 +128,21 @@ fn edited(r: std::io::Result<()>) -> ExitCode {
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+    #[cfg(windows)]
+    if !args.is_empty() {
+        win::attach_parent_console();
+    }
     match args.as_slice() {
         [] => gui::run(),
+        ["open"] => match std::env::current_exe() {
+            Ok(me) if hook::open(&me) => {
+                println!("Repo Status window opened.");
+                ExitCode::SUCCESS
+            }
+            _ => fail("could not start the Repo Status window"),
+        },
         ["--help" | "-h"] => {
-            println!("{USAGE}");
+            println!("{}", usage());
             ExitCode::SUCCESS
         }
         ["--version"] => {
@@ -111,7 +153,7 @@ fn main() -> ExitCode {
             let window = std::env::var_os("REPO_STATUS")
                 .map(PathBuf::from)
                 .or_else(|| std::env::current_exe().ok())
-                .unwrap_or_else(|| home().join(".local/bin/repo-status"));
+                .unwrap_or_else(|| install::bin_path(&home()));
             hook::run(&window);
             ExitCode::SUCCESS // a hook must never stand in the way of the prompt
         }
@@ -152,8 +194,8 @@ fn main() -> ExitCode {
         ["--remove-tab", tab] => edited(config::edit(|l| config::remove_tab(l, tab.trim()))),
         ["--sort", tab, sort] => match (tab_name(tab), Sort::parse(sort)) {
             (Some(tab), Some(sort)) => edited(config::edit(|l| config::set_sort(l, &tab, sort))),
-            _ => fail(USAGE),
+            _ => fail(&usage()),
         },
-        _ => fail(USAGE),
+        _ => fail(&usage()),
     }
 }
