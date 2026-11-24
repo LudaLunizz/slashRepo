@@ -1,153 +1,91 @@
 # slashRepo
 
-**Type `/repo`. Your repos show up, from GitHub, GitLab and Codeberg. The AI spends zero tokens on it.**
+**Your repos. One glance. Zero tokens.**
 
 ![The flow: /repo, a hook, repo-status, a window, and 0 tokens for the info](docs/flow.svg)
 
-You have a pile of GitHub repos. Is CI red somewhere? Did a PR turn green while you were not looking?
-Did you forget to cut a release four commits ago? Normally you would ask an AI to go look, and pay tokens
-for it to read a wall of JSON and tell you what you could have read yourself.
+You already have a coding AI open. You already have repos to keep an eye on. Right now, checking
+them means asking the AI to read API responses and parrot them back — burning tokens on information
+you could have read yourself, if only someone put it in front of you.
 
-slashRepo skips the middleman. `/repo` pops open a window that already has the answer:
+slashRepo does exactly that. Type `/repo`. A window appears:
 
 ![The Repo Status window, with three example repos: green, orange and red](docs/window.svg)
 
-Per repo you get the latest release, CI on the default branch, open PRs and issues, Dependabot alerts,
-commits since the last release, and a short to-do list. A dot tells you the mood at a glance:
-🟢 nothing to do, 🟠 something is waiting for you, 🔴 CI is red or there is a security alert.
+Every repo gets a colored dot: 🟢 all clear, 🟠 something needs you, 🔴 CI is broken or there is a
+security alert. Latest release, open PRs, issues, Dependabot alerts, CI status, commits since the last
+tag, and a short to-do — all in one place, refreshed every time you open it.
 
-## About those tokens
+**The AI never sees any of it.** A hook opens the window the moment you hit Enter. The prompt is blocked
+before it reaches the model. No turn, no reply, no tokens. The repo info is free and always will be.
 
-The report is made by one small Rust program, `repo-status`, that talks to GitHub through `gh` (and to GitLab
-and Codeberg over HTTPS). A Claude Code hook starts it
-the moment you send the prompt. **Claude never reads, writes or summarises the report**, so the repo info
-costs **0 tokens**. A bare `/repo` (or a bare "repo check") is even blocked by the hook after the window
-starts, so the prompt never reaches the model at all: no turn, no reply, nothing in the conversation (you
-see "Repo Status window opened (0 tokens)." and that is all). `/repo` is also hidden from Claude's own
-command list, so it doesn't cost a line of context every session. If you write a longer prompt that merely
-mentions a repo check, the window still opens but the prompt goes through, so the rest is not lost.
+## Why you want this
 
-It is also read-only. It looks, it never touches.
+| Without slashRepo | With slashRepo |
+|---|---|
+| "Check my repos" ➜ the AI calls `gh`, reads JSON, writes a summary, you read the summary | `/repo` ➜ a window with everything, right now |
+| Tokens spent on every check | 0 tokens, every time |
+| One repo at a time, or a wall of text | All repos at a glance, tabbed and color-coded |
+| Stale the moment it's printed | Live — open it again whenever you want |
 
-## Install
+## 30-second install
 
-Linux with GTK 4.12 or newer, and `gh` (logged in) for GitHub repos. Nothing else at run time: no Python, no jq.
+Linux, GTK 4.12+, and `gh` logged in. That's it.
 
 ```sh
 git clone https://github.com/LudaLunizz/slashRepo
 cd slashRepo && ./install.sh
 ```
 
-With Rust installed (and the GTK 4 dev files, `libgtk-4-dev` on Debian/Ubuntu) `install.sh` builds the
-binary from the checkout. Without Rust it downloads the prebuilt Linux x86_64 binary of that version from
-the GitHub release and checks it against the release's `SHA256SUMS` first.
+Has Rust? It builds from source. No Rust? It downloads the prebuilt binary and verifies the checksum.
+Then it hooks into every agent it finds — done.
 
-Then `repo-status install` does the rest: it puts itself in `~/.local/bin` and adds a desktop entry. For
-Claude Code it adds `repo.md` to `~/.claude/commands` and `repo-status hook` to `~/.claude/settings.json`
-(backup: `settings.json.bak-slashrepo`); for the other agents see below. Only agents that are installed
-get anything. Running it again changes nothing.
+## Works with every major coding agent
 
-Coming from 0.4 (the Python version)? Run `./install.sh` once: it replaces the old `repo-status-hook`
-entry in `settings.json` with `repo-status hook` and deletes the old hook script. Your repos file stays as it is.
+| Agent | Command | Tokens for the report |
+|---|---|---|
+| **Claude Code** | `/repo` or "repo check" | **0** — prompt never reaches the model |
+| **opencode** | `/repo` | **0** |
+| **Gemini CLI** | `/repo` | **0** |
+| **Codex** | `$repo` | **0** (a few for one command) |
+| **Antigravity** | `/repo` | **0** (a few for one command) |
 
-## Tabs: group your repos
+One install, all agents. Runs in a sandbox too — just point it at a trigger file.
 
-Put your own repos in one tab and the projects you follow in another. Each tab has its own list and
-its own order:
+## Tabs: your repos, your way
 
-- **Add a repo**: type `owner/name` or paste a GitHub link in the box at the top of the tab.
-- **Take one out**: the ✕ on its card. Nothing changes on GitHub; it only leaves your list.
-- **New tab** (top right) and **Remove tab**.
-- **Order**: *My order* (move cards with ▲ ▼), or *Stars* / *Forks*, most first.
-- The dot on a tab shows the worst repo in it.
-
-It all lives in `~/.config/slashrepo/repos`, a plain text file you can also edit by hand:
+Group repos into tabs. Drag them around. Sort by stars or forks. Mix GitHub, GitLab and Codeberg
+in the same view — public repos need no login, private ones just need a read-only token.
 
 ```ini
-# lines before the first [tab] go in "My repos"
-you/rocket-launcher
-you/tiny-parser   # comments are kept
+[Mine]
+me/fast-api
+me/slow-api
 
-[Friends]
+[Watching]
 sort = stars
-a-friend/cool-lib
+gitlab.com/gitlab-org/cli
+codeberg.org/forgejo/forgejo
+tokio-rs/tokio
 ```
 
-The same from a terminal:
+No config file yet? It starts with your 20 newest non-fork repos. Change something and it saves.
 
-```sh
-repo-status --add https://github.com/a-friend/cool-lib Friends   # a new tab name makes the tab
-repo-status --remove a-friend/cool-lib Friends
-repo-status --sort Friends stars        # mine, stars or forks
-repo-status --remove-tab Friends
-repo-status --tabs                      # list it all
-```
+## What you get per repo
 
-No file yet? Then you get one tab with your own non-fork, non-archived repos (`gh repo list`, newest 20).
-The first change you make writes those to the file, so they stay.
+- Latest release tag and how many commits since
+- CI status on the default branch
+- Open PRs (or MRs on GitLab) and issues
+- Dependabot / security alerts
+- A to-do line so you know what to do next
+- Click any line to open it in your browser
 
-## GitLab and Codeberg
+## The fine print
 
-GitLab projects and Codeberg repos sit in the same tabs. Write them with their host, or paste the link:
+- **Linux + GTK 4 only** (for now).
+- **Read-only.** It looks at your repos. It never touches them.
+- **MIT licensed.** Fork it, ship it, do what you want.
 
-```ini
-[Friends]
-a-friend/cool-lib                 # GitHub
-gitlab.com/gitlab-org/cli         # GitLab
-gitlab.com/group/subgroup/project
-codeberg.org/forgejo/forgejo      # Codeberg
-```
+---
 
-Public projects need no login. For private ones set `GITLAB_TOKEN` (a read-only token is enough). A
-self-hosted GitLab works too (`git.example.org/team/app`); set `GITLAB_HOST=git.example.org` if its
-projects need the token. The token is only ever sent to that one host. GitLab shows merge requests
-(`MR !12`) and pipelines where GitHub shows PRs and checks.
-
-Codeberg works the same way: public repos need no login, `CODEBERG_TOKEN` for private ones (sent
-only to codeberg.org). Self-hosted Forgejo or Gitea servers are not supported yet.
-GitLab and Codeberg have no Dependabot alerts here.
-
-## Other coding agents
-
-`install.sh` (`repo-status install`) also sets up `/repo` for the other agents it finds on your machine:
-
-| Agent | Type | How it opens | Tokens for the report |
-|---|---|---|---|
-| Claude Code | `/repo` or "repo check" | a hook opens the window and blocks the prompt | 0, no turn at all |
-| opencode | `/repo` | the command runs `repo-status` itself | 0 |
-| Gemini CLI | `/repo` | the command runs it (asks you once first) | 0 |
-| Codex | `$repo` (or pick it in `/skills`) | a `repo` skill: the agent runs one command | 0 (a few for that one command) |
-| Antigravity | `/repo` | a `repo` skill: the agent runs one command | 0 (a few for that one command) |
-
-Codex and Antigravity have no hook that fits, and they replaced custom commands with skills, so there
-the agent itself runs `repo-status` once. It never reads the report. opencode and Gemini CLI say so in
-one line when they cannot reach the window.
-
-### Agents in a sandbox
-
-If your agent runs in a sandbox that cannot see `repo-status`, `gh` or your GitHub login (good!), let
-`/repo` write a trigger file instead, and a systemd user unit outside the sandbox opens the window:
-
-```sh
-./install.sh --trigger ~/agent-sandbox/.slashrepo-open   # any file the sandbox can write
-```
-
-Then give the sandbox `SLASHREPO_TRIGGER=~/agent-sandbox/.slashrepo-open` (full path), for example
-`--setenv SLASHREPO_TRIGGER ...` in bubblewrap. The sandbox gets nothing else: writing the file is all
-it can do, and that only opens the read-only window. Works for the opencode and Gemini CLI commands.
-
-## Use
-
-- `/repo`, "repo check" or "check the repos" in Claude Code opens the window (other agents: see above).
-- `repo-status` opens it from a terminal or the app menu.
-- `repo-status --text` prints the same report as plain text, handy over SSH (`--text Friends`: one tab).
-- `repo-status --help` lists every command.
-
-## Limits
-
-Linux and GTK 4 only. The hook matches the prompt text, so a prompt that mentions "repo check" in passing
-also opens the window (it is only blocked when the prompt is nothing but the command). The pictures above use made-up repos.
-
-## Licence
-
-MIT. See [LICENSE](LICENSE).
+**One keystroke. Every repo. No tokens.** [Install it.](#30-second-install)
