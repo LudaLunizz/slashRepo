@@ -18,6 +18,8 @@ Dependabot alerts, and a short to-do — all in one place, refreshed every time 
 
 **The AI never sees any of it.** A hook opens the window the moment you hit Enter. The prompt is blocked
 before it reaches the model. No turn, no reply, no tokens. The repo info is free and always will be.
+(That is Claude Code. opencode, Gemini CLI, Codex and Antigravity have no way to block a prompt, so their
+`/repo` still costs one short model turn; the repo info itself still costs nothing.)
 
 ## Now on Windows too
 
@@ -96,7 +98,7 @@ tokio-rs/tokio
 ```
 
 No config file yet? It starts with your 20 newest non-fork repos. Change something and it saves.
-The file is `~/.config/slashrepo/repos` (Windows: `%APPDATA%\slashRepo\repos`).
+The file is `~/.config/slashrepo/repos`, or `$XDG_CONFIG_HOME/slashrepo/repos` when that is set (Windows: `%APPDATA%\slashRepo\repos`).
 
 ## What you get per repo
 
@@ -168,6 +170,19 @@ under `~/.local/share`), and for each agent it finds:
 With `--trigger`: two units in `~/.config/systemd/user/` and the trigger file. On Windows: the exe in
 `%LOCALAPPDATA%\Programs\slashRepo`, a Start Menu entry, and the same agent files under your user folder.
 `repo-status uninstall` removes exactly these (your repo list, the trigger file and any file of yours stay).
+
+## Why it is built this way
+
+- **A window, not a TUI or an MCP tool.** A window opens beside the agent and stays out of its
+  context. A tool result would put the report back in the model's context, which is the cost this avoids.
+- **`gh` for GitHub, plain HTTPS for GitLab and Codeberg.** `gh` already holds your login and speaks GraphQL,
+  so one call per repo is enough. The other hosts have no such tool everyone has, so they use their REST APIs
+  and an optional token (see above).
+- **A text file for the list.** One repo per line, tabs in `[brackets]`: easy to edit, diff and keep in a
+  dotfiles repo. The window edits the same file.
+- **Read-only on purpose.** It never writes to a forge, so a bug cannot close an issue or merge a PR.
+- **A hook, not a model.** The only way to keep a prompt away from the model is a hook that runs first.
+  Claude Code has one; the other agents do not, hence the one-line difference above.
 
 ## The fine print
 
