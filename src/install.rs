@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use crate::{home, write_atomic};
+use crate::{home, mode_of, write_atomic, write_atomic_keep};
 
 const CLAUDE_CMD: &str = include_str!("../commands/repo.md");
 const OPENCODE_CMD: &str = include_str!("../commands/opencode/repo.md");
@@ -17,6 +17,8 @@ const TRIGGER_SERVICE: &str = include_str!("../systemd/slashrepo-trigger.service
 const ICON: &str = include_str!("../data/io.github.ludalunizz.SlashRepo.svg");
 
 type Res = Result<(), String>;
+/// One step of `install`: what it did, or why it failed.
+type Step = Result<String, String>;
 
 /// Where `install` puts the binary.
 pub fn bin_path(h: &Path) -> PathBuf {
@@ -44,6 +46,36 @@ fn has(cmd: &str) -> bool {
 
 fn put(path: &Path, text: &str) -> Res {
     write_atomic(path, text.as_bytes(), 0o644).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// A command or skill file we wrote calls `repo-status`; one that does not is somebody else's.
+pub fn is_ours(text: &str) -> bool {
+    text.contains("repo-status")
+}
+
+enum Put {
+    Written,
+    /// a file of the user's own is there: left alone
+    Kept,
+}
+
+/// put, but never over a file we did not write. (A file that is not text is not ours either.)
+fn put_ours(path: &Path, text: &str) -> Result<Put, String> {
+    match std::fs::read_to_string(path) {
+        Ok(old) if !is_ours(&old) => return Ok(Put::Kept),
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => return Ok(Put::Kept),
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(format!("{}: {e}", path.display())),
+        _ => {}
+    }
+    put(path, text).map(|()| Put::Written)
+}
+
+/// One agent's command or skill file; says so when it leaves the user's own file alone.
+fn agent_file(path: &Path, text: &str, done: &str) -> Step {
+    match put_ours(path, text)? {
+        Put::Written => Ok(done.into()),
+        Put::Kept => Ok(format!("kept your own {} (it does not call repo-status), so no /repo here", path.display())),
+    }
 }
 
 /// The binary as the agents' shells should call it. Unix: quoted for sh when needed. Windows:
@@ -94,40 +126,52 @@ pub fn add_hook(settings: &mut Value, command: &str, old: &str) -> Res {
     Ok(())
 }
 
-fn claude(bin: &Path, h: &Path) -> Res {
+/// /repo + the prompt hook. settings.json is read and checked before anything is written, so a
+/// broken one changes nothing; it keeps its mode and symlink, and a backup of the state before this
+/// change sits next to it.
+fn claude(bin: &Path, h: &Path) -> Step {
     let dir = h.join(".claude");
     let cmd = if cfg!(windows) {
         CLAUDE_CMD.replace("~/.local/bin/repo-status", "repo-status.exe")
     } else {
         CLAUDE_CMD.into()
     };
-    put(&dir.join("commands/repo.md"), &cmd)?;
     let settings = dir.join("settings.json");
-    let text = match std::fs::read_to_string(&settings) {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => "{}".into(),
+    let (text, existed) = match std::fs::read_to_string(&settings) {
+        Ok(t) => (t, true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => ("{}".to_string(), false),
         Err(e) => return Err(format!("{}: {e}", settings.display())),
     };
-    let backup = dir.join("settings.json.bak-slashrepo");
-    if !backup.exists() {
-        put(&backup, &text)?;
-    }
     let mut v: Value = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", settings.display()))?;
     let old_hook = h.join(".local/bin/repo-status-hook");
     add_hook(&mut v, &format!("{} hook", shell_path(bin)), &old_hook.to_string_lossy())?;
     let out = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())? + "\n";
+
+    let mut said = String::from("/repo");
+    if let Put::Kept = put_ours(&dir.join("commands/repo.md"), &cmd)? {
+        said = format!(
+            "kept your own {} (it does not call repo-status); the hook still opens the window",
+            dir.join("commands/repo.md").display()
+        );
+    }
     if out != text {
-        put(&settings, &out)?; // temp file + rename: a failure never leaves settings.json empty
+        if existed {
+            let backup = dir.join("settings.json.bak-slashrepo");
+            let mode = mode_of(&settings).unwrap_or(0o644);
+            write_atomic(&backup, text.as_bytes(), mode).map_err(|e| format!("{}: {e}", backup.display()))?;
+            said += &format!("  (settings backup: {})", backup.display());
+        }
+        // temp file + rename: a failure never leaves settings.json empty
+        write_atomic_keep(&settings, out.as_bytes(), 0o644).map_err(|e| format!("{}: {e}", settings.display()))?;
     }
     // the shell hook of 0.4.x is replaced by `repo-status hook`
     if std::fs::read_to_string(&old_hook).is_ok_and(|t| t.contains("Repo Status")) {
         let _ = std::fs::remove_file(&old_hook);
     }
-    println!("Claude Code: /repo  (settings backup: {})", backup.display());
-    Ok(())
+    Ok(said)
 }
 
-fn trigger(file: &Path, h: &Path) -> Res {
+fn trigger(file: &Path, h: &Path) -> Step {
     if cfg!(windows) {
         return Err("--trigger sets up a systemd unit: Linux only".into());
     }
@@ -149,8 +193,7 @@ fn trigger(file: &Path, h: &Path) -> Res {
             return Err(format!("systemctl {} failed", args.join(" ")));
         }
     }
-    println!("trigger: writing {f} opens the window (set SLASHREPO_TRIGGER={f} inside the sandbox)");
-    Ok(())
+    Ok(format!("writing {f} opens the window (set SLASHREPO_TRIGGER={f} inside the sandbox)"))
 }
 
 fn desktop_exec(bin: &Path) -> String {
@@ -237,7 +280,15 @@ fn windows_agent_files(bin: &Path) -> (String, String, String) {
     (opencode, gemini, skill)
 }
 
+/// The environment variable `home()` reads.
+pub fn home_var() -> &'static str {
+    if cfg!(windows) { "USERPROFILE" } else { "HOME" }
+}
+
 pub fn run(trigger_file: Option<&Path>) -> Res {
+    if std::env::var_os(home_var()).is_none_or(|v| v.is_empty()) {
+        return Err(format!("{} is not set: there is no home folder to install into", home_var()));
+    }
     let h = home();
     let bin = bin_path(&h);
     copy_self(&bin)?;
@@ -262,33 +313,48 @@ pub fn run(trigger_file: Option<&Path>) -> Res {
     let (opencode_cmd, gemini_cmd, skill) =
         if cfg!(windows) { windows_agent_files(&bin) } else { (OPENCODE_CMD.into(), GEMINI_CMD.into(), SKILL.into()) };
 
+    // Every agent is a step of its own: one that fails does not stop the others.
+    let mut steps: Vec<(&str, Step)> = Vec::new();
     // Claude Code: /repo command + a UserPromptSubmit hook that opens the window (0 tokens).
     if h.join(".claude").is_dir() || has("claude") {
-        claude(&bin, &h)?;
+        steps.push(("Claude Code", claude(&bin, &h)));
     }
     // opencode: the command runs repo-status itself (0 tokens).
     if h.join(".config/opencode").is_dir() || has("opencode") {
-        put(&h.join(".config/opencode/command/repo.md"), &opencode_cmd)?;
-        println!("opencode: /repo");
+        steps.push(("opencode", agent_file(&h.join(".config/opencode/command/repo.md"), &opencode_cmd, "/repo")));
     }
     // Gemini CLI: the command runs repo-status itself (asks once before it runs a shell command).
     if h.join(".gemini/settings.json").is_file() || has("gemini") {
-        put(&h.join(".gemini/commands/repo.toml"), &gemini_cmd)?;
-        println!("Gemini CLI: /repo");
+        steps.push(("Gemini CLI", agent_file(&h.join(".gemini/commands/repo.toml"), &gemini_cmd, "/repo")));
     }
     // Codex and Antigravity: a "repo" skill; the agent runs the one command (the report stays 0 tokens).
     if h.join(".codex").is_dir() || has("codex") {
-        put(&h.join(".agents/skills/repo/SKILL.md"), &skill)?;
-        println!("Codex: $repo (or pick it in /skills)");
+        let path = h.join(".agents/skills/repo/SKILL.md");
+        steps.push(("Codex", agent_file(&path, &skill, "$repo (or pick it in /skills)")));
     }
     if h.join(".gemini/antigravity").is_dir() || h.join(".gemini/config").is_dir() || has("agy") {
-        put(&h.join(".gemini/config/skills/repo/SKILL.md"), &skill)?;
-        println!("Antigravity: /repo");
+        steps.push(("Antigravity", agent_file(&h.join(".gemini/config/skills/repo/SKILL.md"), &skill, "/repo")));
     }
     if let Some(f) = trigger_file {
-        trigger(f, &h)?;
+        steps.push(("trigger", trigger(f, &h)));
+    }
+    let mut failed = 0;
+    for (name, result) in &steps {
+        match result {
+            Ok(said) => println!("{name}: {said}"),
+            Err(e) => {
+                failed += 1;
+                println!("{name}: FAILED: {e}");
+            }
+        }
     }
     println!("Optional: list repos in {} (see the README)", crate::config::path().display());
+    if failed > 0 {
+        return Err(format!(
+            "{failed} of {} steps failed (the others are done; fix the cause and run install again)",
+            steps.len()
+        ));
+    }
     Ok(())
 }
 
