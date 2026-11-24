@@ -263,7 +263,7 @@ impl App {
                 let url = c.and_then(|c| c.ok()).map(|d| d.url.clone()).filter(|u| !u.is_empty());
                 let url = url.unwrap_or_else(|| report::web_url(repo));
                 let name = ui.link(RichText::new(repo).strong().underline().color(LINK));
-                if name.on_hover_text(format!("Open {url}")).clicked() {
+                if name.on_hover_text(format!("Open {url}")).clicked() && report::openable(&url) {
                     ui.ctx().open_url(egui::OpenUrl::new_tab(url));
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -290,7 +290,9 @@ impl App {
             for (line, url) in &lines[1..] {
                 match url {
                     Some(u) => {
-                        if ui.link(RichText::new(line).color(LINK)).on_hover_text(format!("Open {u}")).clicked() {
+                        if ui.link(RichText::new(line).color(LINK)).on_hover_text(format!("Open {u}")).clicked()
+                            && report::openable(u)
+                        {
                             ui.ctx().open_url(egui::OpenUrl::new_tab(u));
                         }
                     }

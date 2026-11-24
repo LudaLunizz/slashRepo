@@ -77,8 +77,9 @@ fn flags_edit_the_real_file() {
     std::fs::write(&cfg, "me/a\n").unwrap();
     assert!(h.run(&["--add", "https://github.com/st/x", "ArtCraft"], None, &[]).status.success());
     assert!(h.run(&["--sort", "ArtCraft", "stars"], None, &[]).status.success());
-    assert!(!h.run(&["--add", "nonsense"], None, &[]).status.success());
-    assert!(!h.run(&["--bogus"], None, &[]).status.success());
+    // wrong usage is exit code 2, a failed run is 1
+    assert_eq!(h.run(&["--add", "nonsense"], None, &[]).status.code(), Some(2));
+    assert_eq!(h.run(&["--bogus"], None, &[]).status.code(), Some(2));
     assert_eq!(read(&cfg), "me/a\n\n[ArtCraft]\nsort = stars\nst/x\n");
     let tabs = h.run(&["--tabs"], None, &[]);
     assert_eq!(String::from_utf8_lossy(&tabs.stdout), "[My repos]\n  me/a\n[ArtCraft]  sort = stars\n  st/x\n");
@@ -86,6 +87,21 @@ fn flags_edit_the_real_file() {
     assert_eq!(read(&cfg), "me/a\n\n");
     assert!(h.run(&["--remove", "me/a"], None, &[]).status.success());
     assert_eq!(read(&cfg), "\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn the_repos_file_follows_xdg_config_home() {
+    let h = TempHome::new("xdg");
+    let xdg = h.path("elsewhere");
+    let out = h.run(&["--add", "me/a"], None, &[("XDG_CONFIG_HOME", &xdg)]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(read(&xdg.join("slashrepo/repos")), "[My repos]\nme/a\n");
+    assert!(!h.path(CONFIG).exists());
+    // a relative XDG_CONFIG_HOME is ignored, as the spec says
+    let out = h.run(&["--add", "me/b"], None, &[("XDG_CONFIG_HOME", Path::new("rel"))]);
+    assert!(out.status.success());
+    assert_eq!(read(&h.path(CONFIG)), "[My repos]\nme/b\n");
 }
 
 #[test]
