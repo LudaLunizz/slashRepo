@@ -438,14 +438,19 @@ fn fonts(ctx: &egui::Context) {
     ctx.set_fonts(defs);
 }
 
+const TITLE: &str = "Repo Status";
+
 pub fn run() -> ExitCode {
-    let mut viewport = egui::ViewportBuilder::default().with_title("Repo Status").with_inner_size([900.0, 760.0]);
+    if crate::win::show_open_window(TITLE) {
+        return ExitCode::SUCCESS;
+    }
+    let mut viewport = egui::ViewportBuilder::default().with_title(TITLE).with_inner_size([900.0, 760.0]);
     if let Some(i) = icon() {
         viewport = viewport.with_icon(i);
     }
     let options = eframe::NativeOptions { viewport, ..Default::default() };
     let ran = eframe::run_native(
-        "Repo Status",
+        TITLE,
         options,
         Box::new(|cc| {
             cc.egui_ctx.set_theme(egui::Theme::Dark);
