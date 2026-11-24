@@ -48,9 +48,14 @@ impl RealNet {
     }
 }
 
+/// The same 60 seconds the HTTPS calls get.
+const GH_TIMEOUT: Duration = Duration::from_secs(60);
+
 impl Net for RealNet {
     fn gh(&self, args: &[&str]) -> Res<Value> {
-        let out = crate::command("gh").args(args).output().map_err(|e| format!("gh: {e}"))?;
+        let mut cmd = crate::command("gh");
+        cmd.args(args);
+        let out = crate::output_within(cmd, GH_TIMEOUT).map_err(|e| format!("gh: {e}"))?;
         if !out.status.success() {
             let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
             return Err(if err.is_empty() { "gh failed".into() } else { err });

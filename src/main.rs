@@ -63,6 +63,44 @@ pub fn command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
     c
 }
 
+/// `cmd.output()` with a deadline: a hung child (a `gh` waiting on a dead network) is killed and
+/// reported instead of freezing the check for ever.
+pub fn output_within(
+    mut cmd: std::process::Command,
+    limit: std::time::Duration,
+) -> std::io::Result<std::process::Output> {
+    use std::io::Read;
+    use std::process::Stdio;
+    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    // drain both pipes on their own threads so a chatty child cannot fill a pipe and stall
+    fn drain(mut pipe: impl Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = pipe.read_to_end(&mut buf);
+            buf
+        })
+    }
+    let out = child.stdout.take().map(drain);
+    let err = child.stderr.take().map(drain);
+    let start = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if start.elapsed() >= limit {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("no answer after {}s", limit.as_secs()),
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    };
+    let join = |h: Option<std::thread::JoinHandle<Vec<u8>>>| h.and_then(|h| h.join().ok()).unwrap_or_default();
+    Ok(std::process::Output { status, stdout: join(out), stderr: join(err) })
+}
+
 /// Write via a temp file + rename, so a crash never leaves half a file. `mode` is the Unix file
 /// mode (Windows has none).
 pub fn write_atomic(path: &Path, data: &[u8], mode: u32) -> std::io::Result<()> {
@@ -229,5 +267,39 @@ fn main() -> ExitCode {
             _ => fail(&usage()),
         },
         _ => fail(&usage()),
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::output_within;
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn output_within_returns_what_a_quick_child_wrote() {
+        let mut c = Command::new("sh");
+        c.args(["-c", "echo out; echo err >&2; exit 3"]);
+        let o = output_within(c, Duration::from_secs(10)).unwrap();
+        assert_eq!(o.status.code(), Some(3));
+        assert_eq!(o.stdout, b"out\n");
+        assert_eq!(o.stderr, b"err\n");
+    }
+
+    #[test]
+    fn output_within_reads_more_than_a_pipe_holds() {
+        let mut c = Command::new("sh");
+        c.args(["-c", "head -c 500000 /dev/zero"]);
+        assert_eq!(output_within(c, Duration::from_secs(10)).unwrap().stdout.len(), 500_000);
+    }
+
+    #[test]
+    fn output_within_kills_a_hung_child() {
+        let mut c = Command::new("sleep");
+        c.arg("30");
+        let start = Instant::now();
+        let e = output_within(c, Duration::from_millis(300)).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::TimedOut);
+        assert!(start.elapsed() < Duration::from_secs(5));
     }
 }
