@@ -126,8 +126,24 @@ pub fn write_atomic(path: &Path, data: &[u8], mode: u32) -> std::io::Result<()> 
     })();
     if written.is_err() {
         let _ = std::fs::remove_file(&tmp);
+        return written;
     }
+    sync_dir(path);
     written
+}
+
+/// Sync the folder that holds `path`, so the rename itself survives a power cut (Unix; Windows
+/// has no folder handle for this). Best effort: the new file is already in place.
+fn sync_dir(path: &Path) {
+    #[cfg(unix)]
+    if let Some(dir) = path.parent() {
+        let dir = if dir.as_os_str().is_empty() { Path::new(".") } else { dir };
+        if let Ok(d) = std::fs::File::open(dir) {
+            let _ = d.sync_all();
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
 }
 
 /// The Unix mode of an existing file (None on Windows or when it is not there).
