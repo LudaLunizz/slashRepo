@@ -315,6 +315,25 @@ fn install_never_overwrites_a_command_file_that_is_not_ours() {
 }
 
 #[test]
+fn edits_at_the_same_time_all_land() {
+    let h = TempHome::new("edit-lock");
+    let list = h.path(CONFIG);
+    std::fs::create_dir_all(list.parent().unwrap()).unwrap();
+    std::fs::write(&list, "me/start\n").unwrap();
+    let names: Vec<String> = (0..12).map(|i| format!("me/r{i}")).collect();
+    std::thread::scope(|s| {
+        for n in &names {
+            let h = &h;
+            s.spawn(move || assert!(h.run(&["--add", n], None, &[]).status.success()));
+        }
+    });
+    let text = read(&list);
+    for n in names.iter().map(String::as_str).chain(["me/start"]) {
+        assert!(text.lines().any(|l| l.trim() == n), "lost {n}:\n{text}");
+    }
+}
+
+#[test]
 fn one_failing_agent_does_not_stop_the_others() {
     let h = TempHome::new("install-partial");
     std::fs::create_dir_all(h.path(".claude")).unwrap();

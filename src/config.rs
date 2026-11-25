@@ -268,9 +268,23 @@ pub fn load_tabs() -> Result<Vec<Tab>, String> {
     }
 }
 
+/// The lock file next to the repos file: held for a whole edit, so two edits at once (two
+/// `--add` runs, a window button and a CLI call) take turns instead of one losing its change.
+/// The repos file itself is replaced on every write, so it cannot carry the lock.
+pub fn lock_path() -> PathBuf {
+    let p = path();
+    p.with_file_name(".repos.lock")
+}
+
 /// Apply change to the config file; a missing file starts from own_repos(). A file that exists
 /// but cannot be read stops the edit and is left as it is.
 pub fn edit(change: impl FnOnce(&[String]) -> Vec<String>) -> std::io::Result<()> {
+    let lock = lock_path();
+    if let Some(dir) = lock.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&lock)?;
+    lock.lock()?; // released when `lock` is dropped (also if change() panics)
     let lines = match read_lines() {
         Ok(Some(lines)) => lines,
         Ok(None) => own_repos().into_iter().map(|r| format!("{r}\n")).collect(),
