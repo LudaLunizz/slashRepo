@@ -162,7 +162,7 @@ under `~/.local/share`), and for each agent it finds:
 | Agent | File |
 |---|---|
 | Claude Code | `~/.claude/commands/repo.md`, a hook in `~/.claude/settings.json` (copy of the old file: `settings.json.bak-slashrepo`) |
-| opencode | `~/.config/opencode/command/repo.md` |
+| opencode | `~/.config/opencode/commands/repo.md` (an older `command/repo.md` of ours is taken away) |
 | Gemini CLI | `~/.gemini/commands/repo.toml` |
 | Codex | `~/.agents/skills/repo/SKILL.md` |
 | Antigravity | `~/.gemini/config/skills/repo/SKILL.md` |

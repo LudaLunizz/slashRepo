@@ -148,7 +148,9 @@ pub fn github(net: &dyn Net, full: &str) -> Res<Fetched> {
     let (owner, name) = full.split_once('/').ok_or("not owner/name")?;
     let q = format!("query={GITHUB_QUERY}");
     let (o, n) = (format!("o={owner}"), format!("n={name}"));
-    let got = net.gh(&["api", "graphql", "-f", &q, "-F", &o, "-F", &n])?;
+    // -f, not -F: -F would turn a name like 123 or true into a number or boolean, and @x into
+    // the contents of file x. Owner and name are always strings.
+    let got = net.gh(&["api", "graphql", "-f", &q, "-f", &o, "-f", &n])?;
     let r = got.pointer("/data/repository").filter(|r| !r.is_null()).ok_or("repository not found")?;
     let branch = st(r, "/defaultBranchRef/name");
     let rel = list(r, "/releases/nodes").first();

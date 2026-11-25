@@ -8,8 +8,8 @@ use std::path::Path;
 use serde_json::Value;
 
 use crate::install::{
-    agent_files, bin_path, claude_settings, desktop_files, home_var, hook_command, is_ours, old_hook, settings_backup,
-    start_menu_link, units_dir,
+    agent_files, bin_path, claude_settings, desktop_files, home_var, hook_command, is_ours, old_hook,
+    old_opencode_file, settings_backup, start_menu_link, units_dir,
 };
 use crate::{home, mode_of, write_atomic, write_atomic_keep};
 
@@ -156,6 +156,7 @@ pub fn run() -> Result<(), String> {
     for (name, file) in agent_files(&h) {
         steps.push((name.into(), file_step(&file)));
     }
+    steps.push(("opencode (old folder)".into(), file_step(&old_opencode_file(&h))));
     steps.push((if cfg!(windows) { "Start Menu" } else { "app menu" }.into(), desktop_step(&h)));
     if !cfg!(windows) {
         steps.push(("trigger".into(), trigger_step(&h)));
