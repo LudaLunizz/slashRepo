@@ -20,6 +20,7 @@ fn colour(l: Light) -> &'static str {
         Light::Orange => "#d29922",
         Light::Green => "#57ab5a",
         Light::Grey => "#768390",
+        Light::Blue => "#539bf5",
     }
 }
 
@@ -359,7 +360,7 @@ fn activate(app: &gtk::Application, shown: &RefCell<Weak<Ui>>) {
     css.load_from_string(
         "button.slink { padding: 0 4px; min-height: 0; border: none; box-shadow: none; background: none; } \
          button.slink:hover label { text-decoration-line: underline; } \
-         frame.live { border: 2px solid #57ab5a; } frame.private { border: 2px solid #e5534b; }",
+         frame.live { border: 2px solid #57ab5a; } frame.private { border: 2px solid #539bf5; }",
     );
     if let Some(display) = gdk::Display::default() {
         gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);

@@ -59,12 +59,14 @@ pub struct Card {
 /// Public or private, for the card's border and corner label; None while unknown (failed check).
 pub fn visibility(c: Option<&Card>) -> Option<(&'static str, Light)> {
     let d = c?.ok()?;
-    Some(if d.private { ("private", Light::Red) } else { ("live", Light::Green) })
+    Some(if d.private { ("private", Light::Blue) } else { ("live", Light::Green) })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Light {
     Grey,
+    /// only for the private-repo border, never a status
+    Blue,
     Green,
     Orange,
     Red,
@@ -74,6 +76,7 @@ impl Light {
     pub fn as_str(self) -> &'static str {
         match self {
             Light::Grey => "grey",
+            Light::Blue => "blue",
             Light::Green => "green",
             Light::Orange => "orange",
             Light::Red => "red",
@@ -343,7 +346,7 @@ mod tests {
         if let Ok(d) = &mut c.result {
             d.private = true;
         }
-        assert_eq!(visibility(Some(&c)), Some(("private", Light::Red)));
+        assert_eq!(visibility(Some(&c)), Some(("private", Light::Blue)));
         c.result = Err("down".into());
         assert_eq!(visibility(Some(&c)), None);
         assert_eq!(visibility(None), None);
