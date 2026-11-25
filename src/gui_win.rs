@@ -161,7 +161,8 @@ impl App {
             if ui.add_enabled(!self.checking(), egui::Button::new("Refresh")).clicked() {
                 act.push(Action::Refresh);
             }
-            let repos = config::all_repos(&self.tabs).len();
+            let all = config::all_repos(&self.tabs);
+            let repos = all.len();
             let mut status = String::new();
             if self.checking() {
                 status += "checking… ";
@@ -169,7 +170,11 @@ impl App {
             if !self.stamp.is_empty() {
                 status += &format!("checked {} — ", self.stamp);
             }
-            status += &format!("{repos} repos in {} tab(s)", self.tabs.len());
+            status += &format!(
+                "{repos} repos in {} tab(s) — all tabs: {}",
+                self.tabs.len(),
+                report::totals_line(&all, &self.cards)
+            );
             ui.label(RichText::new(status).small());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.menu_button("New tab", |ui| {
@@ -313,6 +318,7 @@ impl App {
             return;
         };
         self.bar(ui, &tab, act);
+        ui.label(RichText::new(report::totals_line(&tab.repos, &self.cards)).small());
         ui.add_space(6.0);
         let repos = report::ordered(&tab.repos, tab.sort, &self.cards);
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {

@@ -216,6 +216,31 @@ pub fn ordered(repos: &[String], sort: Sort, cards: &HashMap<String, Card>) -> V
     out
 }
 
+/// Stars and forks added up over repos (each repo once). Repos without an answer yet, or whose
+/// check failed, are left out and counted in `missing`.
+pub fn totals_line(repos: &[String], cards: &HashMap<String, Card>) -> String {
+    let (mut stars, mut forks, mut seen, mut missing) = (0u64, 0u64, Vec::new(), 0usize);
+    for r in repos {
+        if seen.contains(&r) {
+            continue;
+        }
+        seen.push(r);
+        match cards.get(r).and_then(Card::ok) {
+            Some(d) => {
+                stars += d.stars;
+                forks += d.forks;
+            }
+            None => missing += 1,
+        }
+    }
+    let counted = seen.len() - missing;
+    let mut out = format!("★ {stars} stars · {forks} forks in {counted} repo{}", if counted == 1 { "" } else { "s" });
+    if missing > 0 {
+        out += &format!(" ({missing} not counted: checking or failed)");
+    }
+    out
+}
+
 /// The repo's page: GitLab/Codeberg lines carry their host, GitHub lines are owner/name.
 /// Only https links are opened from the window: a forge answer (or a hand-edited host) must not
 /// be able to hand the desktop a `file:` or `javascript:` address.
@@ -284,7 +309,7 @@ pub fn text_mode(tabs: &[Tab], only: Option<&str>) -> String {
     let cards = check_all(&crate::config::all_repos(tabs));
     let mut out = String::new();
     for tab in tabs.iter().filter(|t| only.is_none_or(|o| o == t.name)) {
-        out += &format!("\n##### {}\n", tab.name);
+        out += &format!("\n##### {}\n   {}\n", tab.name, totals_line(&tab.repos, &cards));
         for repo in ordered(&tab.repos, tab.sort, &cards) {
             let c = &cards[&repo];
             out += &format!("\n== {}  [{}]\n", c.repo, c.light().as_str());
@@ -320,6 +345,23 @@ mod tests {
             alerts: 0,
         };
         (repo.into(), Card { repo: repo.into(), todo: todo(&d), result: Ok(d) })
+    }
+
+    #[test]
+    fn totals_add_up_once_and_skip_missing() {
+        let mut cards: HashMap<String, Card> = [card("a/x", 5, 2), card("a/y", 3, 1)].into_iter().collect();
+        let v = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(totals_line(&v(&["a/x", "a/y", "a/x"]), &cards), "★ 8 stars · 3 forks in 2 repos");
+        assert_eq!(
+            totals_line(&v(&["a/x", "a/z"]), &cards),
+            "★ 5 stars · 2 forks in 1 repo (1 not counted: checking or failed)"
+        );
+        cards.insert("a/e".into(), Card { repo: "a/e".into(), result: Err("x".into()), todo: vec![] });
+        assert_eq!(
+            totals_line(&v(&["a/e"]), &cards),
+            "★ 0 stars · 0 forks in 0 repos (1 not counted: checking or failed)"
+        );
+        assert_eq!(totals_line(&[], &cards), "★ 0 stars · 0 forks in 0 repos");
     }
 
     #[test]
