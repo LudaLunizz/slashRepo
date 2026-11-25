@@ -33,7 +33,7 @@ pub fn bin_path(h: &Path) -> PathBuf {
 pub fn agent_files(h: &Path) -> [(&'static str, PathBuf); 5] {
     [
         ("Claude Code", h.join(".claude/commands/repo.md")),
-        ("opencode", h.join(".config/opencode/command/repo.md")),
+        ("opencode", h.join(".config/opencode/commands/repo.md")),
         ("Gemini CLI", h.join(".gemini/commands/repo.toml")),
         ("Codex", h.join(".agents/skills/repo/SKILL.md")),
         ("Antigravity", h.join(".gemini/config/skills/repo/SKILL.md")),
@@ -47,6 +47,26 @@ pub fn claude_settings(h: &Path) -> PathBuf {
 /// The copy of settings.json made before `install` or `uninstall` changes it.
 pub fn settings_backup(h: &Path) -> PathBuf {
     h.join(".claude/settings.json.bak-slashrepo")
+}
+
+/// Where slashRepo up to 0.6.1 put the opencode command (opencode reads both `command/` and
+/// `commands/`; the second is the current name).
+pub fn old_opencode_file(h: &Path) -> PathBuf {
+    h.join(".config/opencode/command/repo.md")
+}
+
+/// The opencode step: the command in `commands/`, and an older copy of ours in `command/` taken
+/// away, so /repo is not listed twice. A `command/repo.md` of the user's own stays.
+fn opencode(h: &Path, path: &Path, text: &str) -> Step {
+    let said = agent_file(path, text, "/repo")?;
+    let old = old_opencode_file(h);
+    match std::fs::read_to_string(&old) {
+        Ok(t) if is_ours(&t) => {
+            std::fs::remove_file(&old).map_err(|e| format!("{}: {e}", old.display()))?;
+            Ok(format!("{said} (moved from {})", old.display()))
+        }
+        _ => Ok(said),
+    }
 }
 
 /// The 0.4.x shell hook, replaced by `repo-status hook`.
@@ -371,7 +391,7 @@ pub fn run(trigger_file: Option<&Path>) -> Res {
     }
     // opencode: the command runs repo-status itself (0 tokens).
     if h.join(".config/opencode").is_dir() || has("opencode") {
-        steps.push(("opencode", agent_file(&files[1].1, &opencode_cmd, "/repo")));
+        steps.push(("opencode", opencode(&h, &files[1].1, &opencode_cmd)));
     }
     // Gemini CLI: the command runs repo-status itself (asks once before it runs a shell command).
     if h.join(".gemini/settings.json").is_file() || has("gemini") {

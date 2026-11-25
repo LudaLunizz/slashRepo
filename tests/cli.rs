@@ -253,7 +253,7 @@ fn install_sets_up_each_agent_present_and_only_those() {
     ];
     for f in own.into_iter().chain([
         ".claude/commands/repo.md",
-        ".config/opencode/command/repo.md",
+        ".config/opencode/commands/repo.md",
         ".gemini/commands/repo.toml",
         ".agents/skills/repo/SKILL.md",
         ".gemini/config/skills/repo/SKILL.md",
@@ -276,7 +276,7 @@ fn install_sets_up_each_agent_present_and_only_those() {
         let cmd = list[0]["hooks"][0]["command"].as_str().unwrap();
         let fwd = installed.to_string_lossy().replace('\\', "/");
         assert!(cmd.contains(&fwd) && cmd.ends_with(" hook") && !cmd.contains('\\'), "{cmd}");
-        let opencode = read(&h.path(".config/opencode/command/repo.md"));
+        let opencode = read(&h.path(".config/opencode/commands/repo.md"));
         assert!(opencode.contains(&fwd) && opencode.contains(" open"), "{opencode}");
         assert!(read(&h.path(".agents/skills/repo/SKILL.md")).contains("& '"), "PowerShell line missing");
     }
@@ -295,23 +295,40 @@ fn install_sets_up_each_agent_present_and_only_those() {
 #[test]
 fn install_never_overwrites_a_command_file_that_is_not_ours() {
     let h = TempHome::new("install-own");
-    for d in [".claude/commands", ".config/opencode/command"] {
+    for d in [".claude/commands", ".config/opencode/commands"] {
         std::fs::create_dir_all(h.path(d)).unwrap();
     }
     std::fs::write(h.path(".claude/commands/repo.md"), "my own /repo: list my todos\n").unwrap();
-    std::fs::write(h.path(".config/opencode/command/repo.md"), "# mine\nsummarise the repo\n").unwrap();
+    std::fs::write(h.path(".config/opencode/commands/repo.md"), "# mine\nsummarise the repo\n").unwrap();
     let out = h.run(&["install"], None, &[]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert!(String::from_utf8_lossy(&out.stdout).contains("kept your own"), "{:?}", out.stdout);
     assert_eq!(read(&h.path(".claude/commands/repo.md")), "my own /repo: list my todos\n");
-    assert_eq!(read(&h.path(".config/opencode/command/repo.md")), "# mine\nsummarise the repo\n");
+    assert_eq!(read(&h.path(".config/opencode/commands/repo.md")), "# mine\nsummarise the repo\n");
     // the hook does not depend on the command file
     assert!(read(&h.path(".claude/settings.json")).contains(" hook"));
     // a file from an older slashRepo (it calls repo-status) is updated
-    std::fs::write(h.path(".config/opencode/command/repo.md"), "old text: !`repo-status`\n").unwrap();
+    std::fs::write(h.path(".config/opencode/commands/repo.md"), "old text: !`repo-status`\n").unwrap();
     assert!(h.run(&["install"], None, &[]).status.success());
-    let now = read(&h.path(".config/opencode/command/repo.md"));
+    let now = read(&h.path(".config/opencode/commands/repo.md"));
     assert!(now.contains("repo-status") && !now.starts_with("old text"), "{now}");
+}
+
+#[test]
+fn install_moves_our_old_opencode_command_and_keeps_the_users_own() {
+    let h = TempHome::new("install-opencode-move");
+    std::fs::create_dir_all(h.path(".config/opencode/command")).unwrap();
+    // slashRepo up to 0.6.1 wrote command/repo.md: it moves to commands/, so /repo is listed once
+    std::fs::write(h.path(".config/opencode/command/repo.md"), "old text: !`repo-status`\n").unwrap();
+    let out = h.run(&["install"], None, &[]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("moved from"), "{:?}", out.stdout);
+    assert!(!h.path(".config/opencode/command/repo.md").exists());
+    assert!(read(&h.path(".config/opencode/commands/repo.md")).contains("repo-status"));
+    // a command/repo.md of the user's own stays where it is
+    std::fs::write(h.path(".config/opencode/command/repo.md"), "# mine\n").unwrap();
+    assert!(h.run(&["install"], None, &[]).status.success());
+    assert_eq!(read(&h.path(".config/opencode/command/repo.md")), "# mine\n");
 }
 
 #[test]
@@ -344,7 +361,7 @@ fn one_failing_agent_does_not_stop_the_others() {
     let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(stdout.contains("Claude Code: FAILED") && stdout.contains("opencode: /repo"), "{stdout}");
     assert!(stderr.contains("1 of 2 steps failed"), "{stderr}");
-    assert!(h.path(".config/opencode/command/repo.md").exists());
+    assert!(h.path(".config/opencode/commands/repo.md").exists());
     // nothing of Claude Code was written: not the command file, and settings.json is as it was
     assert!(!h.path(".claude/commands/repo.md").exists());
     assert_eq!(read(&h.path(".claude/settings.json")), "this is not json");
@@ -412,6 +429,9 @@ fn uninstall_undoes_install_and_keeps_what_is_not_ours() {
     std::fs::write(&list, "me/a\n").unwrap();
     assert!(h.run(&["install"], None, &[]).status.success());
     assert!(read(&h.path(".claude/settings.json")).contains(" hook"));
+    // an opencode command of ours left in the old folder (from before 0.6.2) goes too
+    std::fs::create_dir_all(h.path(".config/opencode/command")).unwrap();
+    std::fs::write(h.path(".config/opencode/command/repo.md"), "!`repo-status`\n").unwrap();
 
     let out = h.run(&["uninstall"], None, &[]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -420,6 +440,7 @@ fn uninstall_undoes_install_and_keeps_what_is_not_ours() {
     // what install made is gone
     for f in [
         ".claude/commands/repo.md",
+        ".config/opencode/commands/repo.md",
         ".config/opencode/command/repo.md",
         ".agents/skills/repo/SKILL.md",
         if cfg!(windows) { "AppData/Local/Programs/slashRepo/repo-status.exe" } else { ".local/bin/repo-status" },
