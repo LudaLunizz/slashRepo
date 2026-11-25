@@ -21,6 +21,7 @@ fn colour(l: Light) -> Color32 {
         Light::Orange => Color32::from_rgb(0xd2, 0x99, 0x22),
         Light::Green => Color32::from_rgb(0x57, 0xab, 0x5a),
         Light::Grey => Color32::from_rgb(0x76, 0x83, 0x90),
+        Light::Blue => Color32::from_rgb(0x53, 0x9b, 0xf5),
     }
 }
 
