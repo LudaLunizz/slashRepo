@@ -168,6 +168,8 @@ fn page(ui: &Rc<Ui>, tab: &Tab) -> (gtk::Box, gtk::Label) {
     bx.append(&bar);
     let msg = gtk::Label::builder().xalign(0.0).visible(false).build();
     bx.append(&msg);
+    let totals = report::totals_line(&tab.repos, &ui.cards.borrow());
+    bx.append(&label(&format!("<small>{}</small>", esc(&totals)), true));
 
     let on_add = {
         let (w, entry, msg, name) = (weak.clone(), entry.clone(), msg.clone(), tab.name.clone());
@@ -267,11 +269,12 @@ fn render(ui: &Rc<Ui>) {
     let checking = !ui.busy.borrow().is_empty() || !todo.is_empty();
     let stamp = ui.stamp.borrow();
     ui.status.set_markup(&format!(
-        "<small>{}{}{} repos in {} tab(s)</small>",
+        "<small>{}{}{} repos in {} tab(s) — all tabs: {}</small>",
         if checking { "checking… " } else { "" },
         if stamp.is_empty() { String::new() } else { format!("checked {stamp} — ") },
         repos.len(),
-        tabs.len()
+        tabs.len(),
+        esc(&report::totals_line(&repos, &ui.cards.borrow()))
     ));
     drop(stamp);
     ui.refresh.set_sensitive(!checking);
