@@ -15,6 +15,8 @@ slashRepo does exactly that. Type `/repo`. A window appears:
 Every repo gets a colored dot: 🟢 all clear, 🟠 something needs you, 🔴 CI is broken or there is a
 security alert. Latest release and the commits since it, open PRs, issues, CI status, GitHub's
 Dependabot alerts, and a short to-do — all in one place, refreshed every time you open it.
+The card's border shows who can see the repo: green and "live" when it is public, red and
+"private" when it is not.
 
 **The AI never sees any of it.** A hook opens the window the moment you hit Enter. The prompt is blocked
 before it reaches the model. No turn, no reply, no tokens. The repo info is free and always will be.

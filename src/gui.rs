@@ -127,16 +127,27 @@ fn card(ui: &Rc<Ui>, repo: &str, tab: &Tab, pos: usize, count: usize) -> gtk::Fr
         inner.append(&label("<small>checking…</small>", true));
         return frame;
     };
+    // the lines on the left, live/private in the bottom-right corner beside them (no extra line)
+    let body = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let text = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(4).hexpand(true).build();
+    body.append(&text);
+    inner.append(&body);
     let lines = c.summary_lines();
-    inner.append(&label(&format!("<small>{}</small>", esc(&lines[0].0)), true));
+    text.append(&label(&format!("<small>{}</small>", esc(&lines[0].0)), true));
     for (line, url) in &lines[1..] {
         match url {
-            Some(u) => inner.append(&link(ui, &esc(line), u)),
-            None => inner.append(&label(&format!("   {}", esc(line)), true)),
+            Some(u) => text.append(&link(ui, &esc(line), u)),
+            None => text.append(&label(&format!("   {}", esc(line)), true)),
         }
     }
     for t in &c.todo {
-        inner.append(&label(&format!("<b>→ {}</b>", esc(t)), true));
+        text.append(&label(&format!("<b>→ {}</b>", esc(t)), true));
+    }
+    if let Some((word, light)) = report::visibility(Some(c)) {
+        frame.add_css_class(word);
+        let tag = gtk::Label::builder().halign(gtk::Align::End).valign(gtk::Align::End).build();
+        tag.set_markup(&format!("<span foreground='{}'><small><b>{word}</b></small></span>", colour(light)));
+        body.append(&tag);
     }
     frame
 }
@@ -347,7 +358,8 @@ fn activate(app: &gtk::Application, shown: &RefCell<Weak<Ui>>) {
     let css = gtk::CssProvider::new();
     css.load_from_string(
         "button.slink { padding: 0 4px; min-height: 0; border: none; box-shadow: none; background: none; } \
-         button.slink:hover label { text-decoration-line: underline; }",
+         button.slink:hover label { text-decoration-line: underline; } \
+         frame.live { border: 2px solid #57ab5a; } frame.private { border: 2px solid #e5534b; }",
     );
     if let Some(display) = gdk::Display::default() {
         gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);

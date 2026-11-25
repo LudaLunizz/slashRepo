@@ -46,12 +46,20 @@ pub struct Fetched {
     pub issues: Vec<Issue>,
     pub issue_total: u64,
     pub alerts: u64,
+    /// not public (GitHub private, GitLab private or internal, Codeberg private)
+    pub private: bool,
 }
 
 pub struct Card {
     pub repo: String,
     pub result: Result<Fetched, String>,
     pub todo: Vec<String>,
+}
+
+/// Public or private, for the card's border and corner label; None while unknown (failed check).
+pub fn visibility(c: Option<&Card>) -> Option<(&'static str, Light)> {
+    let d = c?.ok()?;
+    Some(if d.private { ("private", Light::Red) } else { ("live", Light::Green) })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -328,6 +336,19 @@ pub fn text_mode(tabs: &[Tab], only: Option<&str>) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn visibility_word_and_colour() {
+        let (_, mut c) = card("o/r", 0, 0);
+        assert_eq!(visibility(Some(&c)), Some(("live", Light::Green)));
+        if let Ok(d) = &mut c.result {
+            d.private = true;
+        }
+        assert_eq!(visibility(Some(&c)), Some(("private", Light::Red)));
+        c.result = Err("down".into());
+        assert_eq!(visibility(Some(&c)), None);
+        assert_eq!(visibility(None), None);
+    }
+
     fn card(repo: &str, stars: u64, forks: u64) -> (String, Card) {
         let d = Fetched {
             url: String::new(),
@@ -343,6 +364,7 @@ mod tests {
             issues: vec![],
             issue_total: 0,
             alerts: 0,
+            private: false,
         };
         (repo.into(), Card { repo: repo.into(), todo: todo(&d), result: Ok(d) })
     }

@@ -131,7 +131,7 @@ fn labels(v: &Value, ptr: &str, field: &str) -> Vec<String> {
 }
 
 const GITHUB_QUERY: &str = "query($o:String!,$n:String!){ repository(owner:$o,name:$n){
-  url pushedAt stargazerCount forkCount
+  url pushedAt stargazerCount forkCount isPrivate
   defaultBranchRef{ name target{ ... on Commit{ statusCheckRollup{state} } } }
   releases(first:1, orderBy:{field:CREATED_AT, direction:DESC}){ nodes{tagName publishedAt isPrerelease} }
   issues(states:OPEN, first:30, orderBy:{field:CREATED_AT, direction:DESC}){ totalCount nodes{number title url createdAt labels(first:3){nodes{name}}} }
@@ -195,11 +195,12 @@ pub fn github(net: &dyn Net, full: &str) -> Res<Fetched> {
             .collect(),
         issue_total: num(r, "/issues/totalCount"),
         alerts: num(r, "/vulnerabilityAlerts/totalCount"),
+        private: r.get("isPrivate").and_then(Value::as_bool).unwrap_or(false),
     })
 }
 
 const GITLAB_QUERY: &str = "query($p:ID!){ project(fullPath:$p){
-  webUrl lastActivityAt starCount forksCount repository{rootRef}
+  webUrl lastActivityAt starCount forksCount visibility repository{rootRef}
   releases(first:1, sort:RELEASED_AT_DESC){ nodes{tagName releasedAt upcomingRelease} }
   issues(state:opened, first:30, sort:CREATED_DESC){ count nodes{iid title webUrl createdAt labels(first:3){nodes{title}}} }
   mergeRequests(state:opened, first:30){ nodes{iid title webUrl draft author{username} headPipeline{status}} }
@@ -283,6 +284,7 @@ pub fn gitlab(net: &dyn Net, full: &str) -> Res<Fetched> {
             .collect(),
         issue_total: num(r, "/issues/count"),
         alerts: 0,
+        private: st(r, "/visibility") != "public",
     })
 }
 
@@ -373,6 +375,7 @@ pub fn codeberg(net: &dyn Net, full: &str) -> Res<Fetched> {
             })
             .collect(),
         alerts: 0,
+        private: r.get("private").and_then(Value::as_bool).unwrap_or(false),
     })
 }
 
@@ -410,7 +413,7 @@ mod tests {
         if url.ends_with("/graphql") {
             return reply(json!({"data": {"project": {
                 "webUrl": "https://gitlab.com/g/p", "lastActivityAt": "2026-01-01T00:00:00Z", "starCount": 7,
-                "forksCount": 2, "repository": {"rootRef": "main"},
+                "forksCount": 2, "visibility": "internal", "repository": {"rootRef": "main"},
                 "releases": {"nodes": [{"tagName": "v1", "releasedAt": "2026-01-01T00:00:00Z", "upcomingRelease": false}]},
                 "issues": {"count": 1, "nodes": [{"iid": "4", "title": "bug", "webUrl": "https://gitlab.com/g/p/-/issues/4",
                     "createdAt": "2026-01-01T00:00:00.123Z", "labels": {"nodes": [{"title": "bug"}]}}]},
@@ -428,7 +431,7 @@ mod tests {
         let (json, total) = if u.is_empty() {
             (
                 json!({"html_url": "https://codeberg.org/o/r", "updated_at": "2026-01-01T00:00:00+01:00",
-                    "stars_count": 3, "forks_count": 1, "default_branch": "main"}),
+                    "stars_count": 3, "forks_count": 1, "default_branch": "main", "private": false}),
                 None,
             )
         } else if u.starts_with("/releases") {
@@ -460,7 +463,7 @@ mod tests {
         let net = Fake { sent: Mutex::new(vec![]), answer: gitlab_answer, env: vec![("GITLAB_TOKEN", "secret")] };
         let card = check_with(&net, "gitlab.com/g/p");
         let ok = card.ok().unwrap();
-        assert_eq!((ok.ci.as_str(), ok.stars, ok.unreleased), ("SUCCESS", 7, Some(2)));
+        assert_eq!((ok.ci.as_str(), ok.stars, ok.unreleased, ok.private), ("SUCCESS", 7, Some(2), true));
         assert!(card.todo.contains(&"MR !9 has failing checks".to_string()), "{:?}", card.todo);
         assert!(card.todo.contains(&"2 commit(s) on main since v1: release when ready".to_string()));
         assert_eq!(
@@ -484,7 +487,10 @@ mod tests {
         let net = Fake { sent: Mutex::new(vec![]), answer: codeberg_answer, env };
         let card = check_with(&net, "codeberg.org/o/r");
         let ok = card.ok().unwrap();
-        assert_eq!((ok.ci.as_str(), ok.stars, ok.issue_total, ok.unreleased), ("SUCCESS", 3, 12, Some(4)));
+        assert_eq!(
+            (ok.ci.as_str(), ok.stars, ok.issue_total, ok.unreleased, ok.private),
+            ("SUCCESS", 3, 12, Some(4), false)
+        );
         assert!(card.todo.contains(&"PR #6 has failing checks".to_string()), "{:?}", card.todo);
         assert!(card.todo.contains(&"12 open issue(s) to triage".to_string()));
         let sent = net.sent.lock().unwrap();
