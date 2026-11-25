@@ -261,7 +261,12 @@ impl App {
 
     fn card(&self, ui: &mut egui::Ui, repo: &str, tab: &Tab, pos: usize, count: usize, act: &mut Vec<Action>) {
         let c = self.cards.get(repo);
-        egui::Frame::group(ui.style()).inner_margin(egui::Margin::symmetric(10, 8)).show(ui, |ui| {
+        let vis = report::visibility(c);
+        let mut frame = egui::Frame::group(ui.style()).inner_margin(egui::Margin::symmetric(10, 8));
+        if let Some((_, light)) = vis {
+            frame = frame.stroke(egui::Stroke::new(2.0, colour(light)));
+        }
+        frame.show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 ui.label(RichText::new("●").size(18.0).color(colour(c.map_or(Light::Grey, Card::light))));
@@ -308,6 +313,12 @@ impl App {
             }
             for t in &c.todo {
                 ui.label(RichText::new(format!("→ {t}")).strong());
+            }
+            // live/private in the bottom-right corner, under the arrows and ✕
+            if let Some((word, light)) = vis {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(RichText::new(word).small().strong().color(colour(light)));
+                });
             }
         });
     }
