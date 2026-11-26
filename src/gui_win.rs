@@ -257,10 +257,13 @@ impl App {
             for t in &c.todo {
                 ui.label(RichText::new(t).strong());
             }
-            // live/private in the bottom-right corner, under the arrows and ✕
+            // live/private in the bottom-right corner, under the arrows and ✕. Inside a row: a
+            // right-to-left layout on its own takes all the height left in the scroll area (#68)
             if let Some((word, light)) = c.visibility {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(RichText::new(word).small().strong().color(colour(light)));
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(RichText::new(word).small().strong().color(colour(light)));
+                    });
                 });
             }
         });
