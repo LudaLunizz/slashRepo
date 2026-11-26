@@ -74,7 +74,11 @@ pub const AGENTS: [Agent; 5] = [
     },
     Agent {
         name: "Antigravity",
-        found: |h| h.join(".gemini/antigravity").is_dir() || h.join(".gemini/config").is_dir() || has("agy"),
+        // the IDE (.gemini/antigravity), the shared config, or the CLI on its own (.gemini/antigravity-cli, agy)
+        found: |h| {
+            [".gemini/antigravity", ".gemini/config", ".gemini/antigravity-cli"].iter().any(|d| h.join(d).is_dir())
+                || has("agy")
+        },
         file: |h| h.join(".gemini/config/skills/repo/SKILL.md"),
         old_file: None,
         install: |h, bin| own_file(h, bin, 4, "/repo"),
