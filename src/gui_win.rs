@@ -485,7 +485,10 @@ mod tests {
     }
 
     fn harness() -> Harness<'static, App> {
-        let mut h = Harness::builder().with_size(egui::vec2(900.0, 760.0)).build_eframe(|_| app());
+        // the window's own fonts (Segoe UI + Segoe UI Symbol for ● ▲ ★ →): the harness stops on a
+        // glyph no font has, so this also checks that the real font setup covers them
+        let mut h =
+            Harness::builder().with_size(egui::vec2(900.0, 760.0)).with_context_setup(fonts).build_eframe(|_| app());
         h.run();
         h
     }
