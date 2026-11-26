@@ -6,6 +6,7 @@
 // Windows: a windowed program (no console window with the Repo Status window); see src/win.rs.
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+mod agents;
 mod config;
 mod forge;
 #[cfg_attr(windows, path = "gui_win.rs")]
@@ -13,6 +14,7 @@ mod gui;
 mod hook;
 mod install;
 mod report;
+mod settings;
 mod uninstall;
 mod view;
 #[cfg(windows)]

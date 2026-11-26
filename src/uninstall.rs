@@ -5,71 +5,21 @@
 
 use std::path::Path;
 
-use serde_json::Value;
-
-use crate::install::{
-    agent_files, bin_path, claude_settings, desktop_files, home_var, hook_command, is_ours, old_hook,
-    old_opencode_file, settings_backup, start_menu_link, units_dir,
-};
-use crate::{home, mode_of, write_atomic, write_atomic_keep};
+use crate::agents::{AGENTS, our_hooks};
+use crate::home;
+use crate::install::{bin_path, desktop_files, home_var, is_ours, start_menu_link, units_dir};
+use crate::settings::{self, Settings};
 
 /// What a step did (None: nothing there to do), or why it failed.
 type Step = Result<Option<String>, String>;
 
-/// Remove every UserPromptSubmit hook whose command is in `commands`. A group, the list or the
-/// `hooks` object that this empties goes too; nothing else is touched. Returns how many were removed.
-pub fn remove_hook(settings: &mut Value, commands: &[String]) -> usize {
-    let mut removed = 0;
-    let mut hooks_empty = false;
-    if let Some(hooks) = settings.get_mut("hooks").and_then(Value::as_object_mut) {
-        let mut list_empty = false;
-        if let Some(list) = hooks.get_mut("UserPromptSubmit").and_then(Value::as_array_mut) {
-            let mut emptied = Vec::new();
-            for (i, group) in list.iter_mut().enumerate() {
-                let Some(inner) = group.get_mut("hooks").and_then(Value::as_array_mut) else { continue };
-                let before = inner.len();
-                inner.retain(|h| {
-                    !h.get("command").and_then(Value::as_str).is_some_and(|c| commands.iter().any(|x| x == c))
-                });
-                removed += before - inner.len();
-                if before > 0 && inner.is_empty() {
-                    emptied.push(i);
-                }
-            }
-            for i in emptied.into_iter().rev() {
-                list.remove(i);
-            }
-            list_empty = removed > 0 && list.is_empty();
-        }
-        if list_empty {
-            hooks.remove("UserPromptSubmit");
-        }
-        hooks_empty = removed > 0 && hooks.is_empty();
-    }
-    if hooks_empty && let Some(root) = settings.as_object_mut() {
-        root.remove("hooks");
-    }
-    removed
-}
-
 fn hook_step(bin: &Path, h: &Path) -> Step {
-    let settings = claude_settings(h);
-    let text = match std::fs::read_to_string(&settings) {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(format!("{}: {e}", settings.display())),
-    };
-    let mut v: Value = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", settings.display()))?;
-    let ours = [hook_command(bin), old_hook(h).to_string_lossy().into_owned()];
-    if remove_hook(&mut v, &ours) == 0 {
+    let mut s = Settings::read(h)?;
+    if settings::remove_hook(&mut s.value, &our_hooks(h, bin)) == 0 {
         return Ok(None);
     }
-    let out = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())? + "\n";
-    let backup = settings_backup(h);
-    write_atomic(&backup, text.as_bytes(), mode_of(&settings).unwrap_or(0o644))
-        .map_err(|e| format!("{}: {e}", backup.display()))?;
-    write_atomic_keep(&settings, out.as_bytes(), 0o644).map_err(|e| format!("{}: {e}", settings.display()))?;
-    Ok(Some(format!("hook removed from {} (backup: {})", settings.display(), backup.display())))
+    let backup = s.save()?.map_or_else(String::new, |b| format!(" (backup: {})", b.display()));
+    Ok(Some(format!("hook removed from {}{backup}", s.path().display())))
 }
 
 /// Remove a file if it is ours; a file of the user's own stays.
@@ -153,10 +103,12 @@ pub fn run() -> Result<(), String> {
     let h = home();
     let bin = bin_path(&h);
     let mut steps: Vec<(String, Step)> = vec![("Claude Code hook".into(), hook_step(&bin, &h))];
-    for (name, file) in agent_files(&h) {
-        steps.push((name.into(), file_step(&file)));
+    for a in &AGENTS {
+        steps.push((a.name.into(), file_step(&(a.file)(&h))));
+        if let Some(old) = a.old_file {
+            steps.push((format!("{} (old folder)", a.name), file_step(&old(&h))));
+        }
     }
-    steps.push(("opencode (old folder)".into(), file_step(&old_opencode_file(&h))));
     steps.push((if cfg!(windows) { "Start Menu" } else { "app menu" }.into(), desktop_step(&h)));
     if !cfg!(windows) {
         steps.push(("trigger".into(), trigger_step(&h)));
@@ -188,33 +140,4 @@ pub fn run() -> Result<(), String> {
         return Err(format!("{failed} of {} steps failed (the others are done)", steps.len()));
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn only_our_hook_goes_and_empty_shells_with_it() {
-        let ours = vec!["/b/repo-status hook".to_string()];
-        // ours next to another hook in the same group: the other stays
-        let mut v = json!({"theme": "x", "hooks": {
-            "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "/b/repo-status hook"},
-                                            {"type": "command", "command": "echo hi"}]}],
-            "Stop": [{"hooks": [{"type": "command", "command": "/b/repo-status hook"}]}]}});
-        assert_eq!(remove_hook(&mut v, &ours), 1);
-        assert_eq!(v["hooks"]["UserPromptSubmit"][0]["hooks"], json!([{"type": "command", "command": "echo hi"}]));
-        assert!(v["hooks"]["Stop"][0]["hooks"][0]["command"].is_string(), "other events are not ours to touch");
-        assert_eq!(v["theme"], "x");
-        // ours alone: group, list and the hooks object go, the rest of the file stays
-        let mut v = json!({"theme": "x", "hooks": {"UserPromptSubmit": [
-            {"hooks": [{"type": "command", "command": "/b/repo-status hook"}]}]}});
-        assert_eq!(remove_hook(&mut v, &ours), 1);
-        assert_eq!(v, json!({"theme": "x"}));
-        // nothing of ours: nothing changes, not even an empty list that was already there
-        let mut v = json!({"hooks": {"UserPromptSubmit": []}});
-        assert_eq!(remove_hook(&mut v, &ours), 0);
-        assert_eq!(v, json!({"hooks": {"UserPromptSubmit": []}}));
-    }
 }
