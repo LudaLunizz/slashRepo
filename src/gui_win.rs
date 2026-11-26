@@ -53,24 +53,30 @@ struct App {
 
 impl App {
     fn new() -> Self {
-        let (send, done) = mpsc::channel();
         // a repos file that cannot be read shows why and starts with no tabs; nothing is rebuilt from it
         let (tabs, error) = match config::load_tabs() {
             Ok(tabs) => (tabs, None),
             Err(e) => (Vec::new(), Some(e)),
         };
+        let snapshot = std::env::var_os("SLASHREPO_SNAPSHOT").map(Into::into);
+        App { error, snapshot, ..App::with_tabs(tabs, Checks::default()) }
+    }
+
+    /// A window over given tabs: no repos file read, no snapshot (the tests start here).
+    fn with_tabs(tabs: Vec<Tab>, checks: Checks) -> Self {
+        let (send, done) = mpsc::channel();
         App {
             tabs,
             current: 0,
-            checks: Checks::default(),
+            checks,
             done,
             send,
             entry: HashMap::new(),
             bad_entry: None,
             new_tab: String::new(),
             confirm: None,
-            error,
-            snapshot: std::env::var_os("SLASHREPO_SNAPSHOT").map(Into::into),
+            error: None,
+            snapshot: None,
             idle_since: None,
             shot_asked: false,
         }
@@ -430,5 +436,103 @@ pub fn run() -> ExitCode {
             eprintln!("could not open the window: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// The real window, driven through its accessibility tree (egui_kittest): no GPU, no network. Every
+/// repo already has its card, so the window starts no check, and no test clicks anything that
+/// writes the repos file.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::report::{Card, CheckState, Fetched};
+    use egui_kittest::{Harness, kittest::Queryable};
+
+    fn tab(name: &str, repos: &[&str]) -> Tab {
+        Tab { name: name.into(), sort: Sort::Mine, repos: repos.iter().map(|r| r.to_string()).collect() }
+    }
+
+    fn card(repo: &str, private: bool) -> Card {
+        let d = Fetched {
+            url: format!("https://github.com/{repo}"),
+            pushed: String::new(),
+            stars: 1,
+            forks: 0,
+            branch: "main".into(),
+            pr: "PR #",
+            unreleased: None,
+            ci: CheckState::Passed,
+            release: None,
+            prs: vec![],
+            issues: vec![],
+            issue_total: 0,
+            alerts: 0,
+            private,
+        };
+        Card { repo: repo.into(), todo: vec!["nothing to do".into()], result: Ok(d) }
+    }
+
+    fn app() -> App {
+        let tabs = vec![tab("Mine", &["me/a", "me/b"]), tab("Theirs", &["you/c"])];
+        let mut checks = Checks::default();
+        let asked = checks.start(&tabs);
+        let found = [card("me/a", false), card("me/b", true), card("you/c", false)]
+            .into_iter()
+            .map(|c| (c.repo.clone(), c))
+            .collect();
+        checks.apply(Done { asked, found }, "09:30".into());
+        App::with_tabs(tabs, checks)
+    }
+
+    fn harness() -> Harness<'static, App> {
+        let mut h = Harness::builder().with_size(egui::vec2(900.0, 760.0)).build_eframe(|_| app());
+        h.run();
+        h
+    }
+
+    #[test]
+    fn cards_show_their_lines_and_border_words() {
+        let h = harness();
+        h.get_by_label("me/a");
+        h.get_by_label("me/b");
+        assert_eq!(h.query_all_by_label("→ nothing to do").count(), 2);
+        h.get_by_label("live");
+        h.get_by_label("private");
+        h.get_by_label_contains("checked 09:30 — 3 repos in 2 tab(s)");
+        assert!(h.query_by_label("you/c").is_none(), "only the open tab's cards are drawn");
+    }
+
+    /// #68: the live/private word took all the height left, so the first card filled the window.
+    #[test]
+    fn a_card_is_as_tall_as_its_lines() {
+        let h = harness();
+        let name = h.get_by_label("me/a").rect();
+        let word = h.get_by_label("live").rect();
+        let next = h.get_by_label("me/b").rect();
+        assert!(word.min.y - name.min.y < 120.0, "live word {word:?} far below the name {name:?}");
+        assert!(next.min.y - name.min.y < 200.0, "second card {next:?} pushed down by the first {name:?}");
+    }
+
+    #[test]
+    fn remove_tab_asks_first_and_cancel_keeps_it() {
+        let mut h = harness();
+        h.get_by_label("Remove tab").click();
+        h.run();
+        h.get_by_label("Remove the tab “Mine”?");
+        h.get_by_label("Its 2 repo(s) leave the list. Nothing changes on GitHub.");
+        h.get_by_label("Cancel").click();
+        h.run();
+        assert!(h.query_by_label("Remove the tab “Mine”?").is_none());
+        assert_eq!(h.state().tabs.len(), 2);
+    }
+
+    #[test]
+    fn a_click_on_a_tab_shows_its_cards() {
+        let mut h = harness();
+        h.get_by_label("Theirs").click();
+        h.run();
+        assert_eq!(h.state().current, 1);
+        h.get_by_label("you/c");
+        assert!(h.query_by_label("me/a").is_none());
     }
 }
