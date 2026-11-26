@@ -305,11 +305,7 @@ fn render(ui: &Rc<Ui>) {
         for r in asked {
             ui.busy.borrow_mut().remove(&r);
             // a crashed check must not leave the card "checking…" forever
-            found.entry(r.clone()).or_insert_with(|| Card {
-                repo: r,
-                result: Err("the check crashed".into()),
-                todo: vec!["press Refresh to try again".into()],
-            });
+            found.entry(r.clone()).or_insert_with(|| Card::crashed(&r));
         }
         ui.cards.borrow_mut().extend(found);
         *ui.stamp.borrow_mut() =
