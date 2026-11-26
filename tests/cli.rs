@@ -308,6 +308,17 @@ fn install_sets_up_each_agent_present_and_only_those() {
 }
 
 #[test]
+fn install_finds_the_antigravity_cli_on_its_own() {
+    let h = TempHome::new("install-agy-cli");
+    std::fs::create_dir_all(h.path(".gemini/antigravity-cli")).unwrap();
+    let out = h.run(&["install"], None, &[]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(read(&h.path(".gemini/config/skills/repo/SKILL.md")).contains("repo-status"));
+    // only Antigravity was there: no Gemini CLI command
+    assert!(!h.path(".gemini/commands/repo.toml").exists());
+}
+
+#[test]
 fn install_never_overwrites_a_command_file_that_is_not_ours() {
     let h = TempHome::new("install-own");
     for d in [".claude/commands", ".config/opencode/commands"] {
