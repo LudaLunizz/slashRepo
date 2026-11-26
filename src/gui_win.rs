@@ -1,7 +1,7 @@
 //! The Repo Status window on Windows (egui, drawn with wgpu): the same window as the GTK 4 one on
 //! Linux. One tab per tab in the repos file, one card per repo; checks run on a worker thread.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::process::ExitCode;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -9,20 +9,17 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, Color32, RichText};
 
 use crate::config::{self, Sort, Tab};
-use crate::report::{self, Card, Light};
+use crate::report::{self, Light};
+use crate::view::{self, CardView, Checks, Done, TabView};
 
-const LINK: Color32 = Color32::from_rgb(0x53, 0x9b, 0xf5);
-const SORT_LABELS: [&str; 3] = ["My order", "Stars", "Forks"];
 const ICON_PNG: &[u8] = include_bytes!("../data/slashrepo-256.png");
 
+fn rgb((r, g, b): (u8, u8, u8)) -> Color32 {
+    Color32::from_rgb(r, g, b)
+}
+
 fn colour(l: Light) -> Color32 {
-    match l {
-        Light::Red => Color32::from_rgb(0xe5, 0x53, 0x4b),
-        Light::Orange => Color32::from_rgb(0xd2, 0x99, 0x22),
-        Light::Green => Color32::from_rgb(0x57, 0xab, 0x5a),
-        Light::Grey => Color32::from_rgb(0x76, 0x83, 0x90),
-        Light::Blue => Color32::from_rgb(0x53, 0x9b, 0xf5),
-    }
+    rgb(view::rgb(l))
 }
 
 type Change = Box<dyn FnOnce(&[String]) -> Vec<String>>;
@@ -37,13 +34,9 @@ enum Action {
 struct App {
     tabs: Vec<Tab>,
     current: usize,
-    /// repo -> its card; cleared by Refresh
-    cards: HashMap<String, Card>,
-    /// repos being checked right now
-    busy: HashSet<String>,
-    stamp: String,
-    done: mpsc::Receiver<(Vec<String>, HashMap<String, Card>)>,
-    send: mpsc::Sender<(Vec<String>, HashMap<String, Card>)>,
+    checks: Checks,
+    done: mpsc::Receiver<Done>,
+    send: mpsc::Sender<Done>,
     /// the add-repo field of each tab
     entry: HashMap<String, String>,
     /// tab whose add field holds something that is not a repo
@@ -69,9 +62,7 @@ impl App {
         App {
             tabs,
             current: 0,
-            cards: HashMap::new(),
-            busy: HashSet::new(),
-            stamp: String::new(),
+            checks: Checks::default(),
             done,
             send,
             entry: HashMap::new(),
@@ -86,42 +77,31 @@ impl App {
     }
 
     fn checking(&self) -> bool {
-        !self.busy.is_empty() || config::all_repos(&self.tabs).iter().any(|r| !self.cards.contains_key(r))
+        self.checks.checking(&self.tabs)
     }
 
     /// Collect finished checks, start the ones not asked yet.
     fn pump(&mut self, ctx: &egui::Context) {
-        while let Ok((asked, mut found)) = self.done.try_recv() {
-            for r in asked {
-                self.busy.remove(&r);
-                // a crashed check must not leave the card "checking…" forever
-                found.entry(r.clone()).or_insert_with(|| Card::crashed(&r));
-            }
-            self.cards.extend(found);
-            self.stamp = crate::win::local_hhmm();
+        while let Ok(done) = self.done.try_recv() {
+            self.checks.apply(done, crate::win::local_hhmm());
         }
-        let todo: Vec<String> = config::all_repos(&self.tabs)
-            .into_iter()
-            .filter(|r| !self.cards.contains_key(r) && !self.busy.contains(r))
-            .collect();
+        let todo = self.checks.start(&self.tabs);
         if todo.is_empty() {
             return;
         }
-        self.busy.extend(todo.iter().cloned());
         let (send, ctx) = (self.send.clone(), ctx.clone());
         std::thread::spawn(move || {
-            let found = std::panic::catch_unwind(|| report::check_all(&todo)).unwrap_or_default();
-            let _ = send.send((todo, found));
+            let _ = send.send(view::run_checks(todo));
             ctx.request_repaint();
         });
     }
 
     fn apply(&mut self, action: Action) {
         match action {
-            Action::Refresh => self.cards.clear(),
+            Action::Refresh => self.checks.clear(),
             Action::Edit(change) => {
                 if let Err(e) = config::edit(change) {
-                    self.error = Some(format!("Could not change {}: {e}", config::path().display()));
+                    self.error = Some(view::edit_failed(&e));
                     return;
                 }
                 self.error = None;
@@ -129,7 +109,7 @@ impl App {
             Action::NewTab(name) => {
                 let n = name.clone();
                 if let Err(e) = config::edit(move |l| config::add_tab(l, &n)) {
-                    self.error = Some(format!("Could not change {}: {e}", config::path().display()));
+                    self.error = Some(view::edit_failed(&e));
                     return;
                 }
                 self.reload_tabs();
@@ -149,30 +129,12 @@ impl App {
         }
     }
 
-    fn worst(&self, tab: &Tab) -> Light {
-        tab.repos.iter().map(|r| self.cards.get(r).map_or(Light::Grey, Card::light)).max().unwrap_or(Light::Grey)
-    }
-
     fn header(&mut self, ui: &mut egui::Ui, act: &mut Vec<Action>) {
         ui.horizontal(|ui| {
             if ui.add_enabled(!self.checking(), egui::Button::new("Refresh")).clicked() {
                 act.push(Action::Refresh);
             }
-            let all = config::all_repos(&self.tabs);
-            let repos = all.len();
-            let mut status = String::new();
-            if self.checking() {
-                status += "checking… ";
-            }
-            if !self.stamp.is_empty() {
-                status += &format!("checked {} — ", self.stamp);
-            }
-            status += &format!(
-                "{repos} repos in {} tab(s) — all tabs: {}",
-                self.tabs.len(),
-                report::totals_line(&all, &self.cards)
-            );
-            ui.label(RichText::new(status).small());
+            ui.label(RichText::new(self.checks.status_line(&self.tabs)).small());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.menu_button("New tab", |ui| {
                     let field = ui.add(egui::TextEdit::singleline(&mut self.new_tab).hint_text("Tab name"));
@@ -198,9 +160,9 @@ impl App {
     fn tab_strip(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             for i in 0..self.tabs.len() {
-                let tab = &self.tabs[i];
-                ui.label(RichText::new("●").color(colour(self.worst(tab))));
-                if ui.selectable_label(i == self.current, &tab.name).clicked() {
+                let v = self.checks.tab(&self.tabs[i]);
+                ui.label(RichText::new("●").color(colour(v.dot)));
+                if ui.selectable_label(i == self.current, &v.name).clicked() {
                     self.current = i;
                 }
                 ui.add_space(8.0);
@@ -208,15 +170,11 @@ impl App {
         });
     }
 
-    fn bar(&mut self, ui: &mut egui::Ui, tab: &Tab, act: &mut Vec<Action>) {
+    fn bar(&mut self, ui: &mut egui::Ui, tab: &TabView, repo_count: usize, act: &mut Vec<Action>) {
         ui.horizontal(|ui| {
             let text = self.entry.entry(tab.name.clone()).or_default();
             let width = (ui.available_width() - 290.0).max(160.0);
-            let field = ui.add(
-                egui::TextEdit::singleline(text)
-                    .hint_text("owner/name, or a GitHub, GitLab or Codeberg link")
-                    .desired_width(width),
-            );
+            let field = ui.add(egui::TextEdit::singleline(text).hint_text(view::ADD_HINT).desired_width(width));
             let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             if ui.button("Add repo").clicked() || enter {
                 match config::repo_name(text) {
@@ -229,90 +187,78 @@ impl App {
                     None => self.bad_entry = Some(tab.name.clone()),
                 }
             }
-            let mut sel = Sort::ALL.iter().position(|s| *s == tab.sort).unwrap_or(0);
-            let before = sel;
+            let mut sel = tab.sort;
             egui::ComboBox::from_id_salt(("sort", &tab.name))
-                .selected_text(SORT_LABELS[sel])
+                .selected_text(view::SORT_LABELS[sel])
                 .show_ui(ui, |ui| {
-                    for (k, l) in SORT_LABELS.iter().enumerate() {
+                    for (k, l) in view::SORT_LABELS.iter().enumerate() {
                         ui.selectable_value(&mut sel, k, *l);
                     }
                 })
                 .response
                 .on_hover_text("Order of this tab");
-            if sel != before {
+            if sel != tab.sort {
                 let (name, s) = (tab.name.clone(), Sort::ALL[sel.min(2)]);
                 act.push(Action::Edit(Box::new(move |l| config::set_sort(l, &name, s))));
             }
             if ui.button("Remove tab").clicked() {
-                self.confirm = Some((tab.name.clone(), tab.repos.len()));
+                self.confirm = Some((tab.name.clone(), repo_count));
             }
         });
         if self.bad_entry.as_deref() == Some(&tab.name) {
-            ui.colored_label(
-                colour(Light::Red),
-                "Type owner/name (GitHub), gitlab.com/group/project, codeberg.org/owner/repo, or paste a link",
-            );
+            ui.colored_label(colour(Light::Red), view::BAD_REPO);
         }
     }
 
-    fn card(&self, ui: &mut egui::Ui, repo: &str, tab: &Tab, pos: usize, count: usize, act: &mut Vec<Action>) {
-        let c = self.cards.get(repo);
-        let vis = report::visibility(c);
+    fn open_link(ui: &mut egui::Ui, text: RichText, url: &str) {
+        if ui.link(text).on_hover_text(format!("Open {url}")).clicked() && report::openable(url) {
+            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+        }
+    }
+
+    fn card(ui: &mut egui::Ui, c: &CardView, tab: &str, act: &mut Vec<Action>) {
         let mut frame = egui::Frame::group(ui.style()).inner_margin(egui::Margin::symmetric(10, 8));
-        if let Some((_, light)) = vis {
+        if let Some((_, light)) = c.visibility {
             frame = frame.stroke(egui::Stroke::new(2.0, colour(light)));
         }
         frame.show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                ui.label(RichText::new("●").size(18.0).color(colour(c.map_or(Light::Grey, Card::light))));
-                let url = c.and_then(|c| c.ok()).map(|d| d.url.clone()).filter(|u| !u.is_empty());
-                let url = url.unwrap_or_else(|| report::web_url(repo));
-                let name = ui.link(RichText::new(repo).strong().underline().color(LINK));
-                if name.on_hover_text(format!("Open {url}")).clicked() && report::openable(&url) {
-                    ui.ctx().open_url(egui::OpenUrl::new_tab(url));
-                }
+                ui.label(RichText::new("●").size(18.0).color(colour(c.dot)));
+                Self::open_link(ui, RichText::new(&c.repo).strong().underline().color(rgb(view::LINK)), &c.url);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.small_button("✕").on_hover_text("Remove from this tab").clicked() {
-                        let (repo, tab) = (repo.to_string(), tab.name.clone());
+                        let (repo, tab) = (c.repo.clone(), tab.to_string());
                         act.push(Action::Edit(Box::new(move |l| config::remove_repo(l, &repo, Some(&tab)))));
                     }
-                    // own order only: under stars/forks the position comes from the numbers
-                    for (text, tip, step) in [("▼", "Move down", 1isize), ("▲", "Move up", -1)] {
-                        let can = tab.sort == Sort::Mine && pos.checked_add_signed(step).is_some_and(|p| p < count);
+                    for (text, tip, step, can) in
+                        [("▼", "Move down", 1isize, c.can_down), ("▲", "Move up", -1, c.can_up)]
+                    {
                         if ui.add_enabled(can, egui::Button::new(text).small()).on_hover_text(tip).clicked() {
-                            let (repo, tab) = (repo.to_string(), tab.name.clone());
+                            let (repo, tab) = (c.repo.clone(), tab.to_string());
                             act.push(Action::Edit(Box::new(move |l| config::move_repo(l, &repo, &tab, step))));
                         }
                     }
                 });
             });
-            let Some(c) = c else {
-                ui.label(RichText::new("checking…").small());
+            let Some(status) = &c.status else {
+                ui.label(RichText::new(view::CHECKING).small());
                 return;
             };
-            let lines = c.summary_lines();
-            ui.label(RichText::new(&lines[0].0).small());
-            for (line, url) in &lines[1..] {
-                match url {
-                    Some(u) => {
-                        if ui.link(RichText::new(line).color(LINK)).on_hover_text(format!("Open {u}")).clicked()
-                            && report::openable(u)
-                        {
-                            ui.ctx().open_url(egui::OpenUrl::new_tab(u));
-                        }
-                    }
+            ui.label(RichText::new(status).small());
+            for line in &c.lines {
+                match &line.url {
+                    Some(u) => Self::open_link(ui, RichText::new(&line.text).color(rgb(view::LINK)), u),
                     None => {
-                        ui.label(format!("   {line}"));
+                        ui.label(&line.text);
                     }
                 }
             }
             for t in &c.todo {
-                ui.label(RichText::new(format!("→ {t}")).strong());
+                ui.label(RichText::new(t).strong());
             }
             // live/private in the bottom-right corner, under the arrows and ✕
-            if let Some((word, light)) = vis {
+            if let Some((word, light)) = c.visibility {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(RichText::new(word).small().strong().color(colour(light)));
                 });
@@ -321,30 +267,31 @@ impl App {
     }
 
     fn page(&mut self, ui: &mut egui::Ui, act: &mut Vec<Action>) {
-        let Some(tab) = self.tabs.get(self.current).cloned() else {
-            ui.label("No tabs yet: make one with “New tab”.");
+        let Some(tab) = self.tabs.get(self.current) else {
+            ui.label(view::NO_TABS);
             return;
         };
-        self.bar(ui, &tab, act);
-        ui.label(RichText::new(report::totals_line(&tab.repos, &self.cards)).small());
+        let (v, count) = (self.checks.tab(tab), tab.repos.len());
+        self.bar(ui, &v, count, act);
+        ui.label(RichText::new(&v.totals).small());
         ui.add_space(6.0);
-        let repos = report::ordered(&tab.repos, tab.sort, &self.cards);
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-            for (pos, repo) in repos.iter().enumerate() {
-                self.card(ui, repo, &tab, pos, repos.len(), act);
+            for c in &v.cards {
+                Self::card(ui, c, &v.name, act);
                 ui.add_space(10.0);
             }
-            if repos.is_empty() {
-                ui.label("No repos in this tab yet. Add one above.");
+            if v.cards.is_empty() {
+                ui.label(view::NO_REPOS);
             }
         });
     }
 
     fn confirm_dialog(&mut self, ctx: &egui::Context, act: &mut Vec<Action>) {
         let Some((name, n)) = self.confirm.clone() else { return };
+        let (question, detail) = view::remove_tab_question(&name, n);
         let modal = egui::Modal::new(egui::Id::unique("remove-tab")).show(ctx, |ui| {
-            ui.heading(format!("Remove the tab “{name}”?"));
-            ui.label(format!("Its {n} repo(s) leave the list. Nothing changes on GitHub."));
+            ui.heading(question);
+            ui.label(detail);
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if ui.button("Cancel").clicked() {

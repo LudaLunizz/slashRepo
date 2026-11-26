@@ -1,27 +1,18 @@
 //! The Repo Status window (GTK 4): one notebook tab per tab in the repos file, one card per repo.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
 use std::process::ExitCode;
 use std::rc::{Rc, Weak};
 
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
 
-use crate::config::{self, Sort, Tab};
-use crate::report::{self, Card, Light};
+use crate::config::{self, Sort};
+use crate::report::Light;
+use crate::view::{self, CardView, Checks, TabView};
 
-const LINK: &str = "#539bf5";
-const SORT_LABELS: [&str; 3] = ["My order", "Stars", "Forks"];
-
-fn colour(l: Light) -> &'static str {
-    match l {
-        Light::Red => "#e5534b",
-        Light::Orange => "#d29922",
-        Light::Green => "#57ab5a",
-        Light::Grey => "#768390",
-        Light::Blue => "#539bf5",
-    }
+fn colour(l: Light) -> String {
+    view::hex(view::rgb(l))
 }
 
 fn esc(t: &str) -> String {
@@ -39,11 +30,7 @@ struct Ui {
     book: gtk::Notebook,
     status: gtk::Label,
     refresh: gtk::Button,
-    /// repo -> its card; cleared by Refresh
-    cards: RefCell<HashMap<String, Card>>,
-    /// repos being checked right now
-    busy: RefCell<HashSet<String>>,
-    stamp: RefCell<String>,
+    checks: RefCell<Checks>,
     /// render() is building pages: the sort dropdown's notify must not write the file then
     building: Cell<bool>,
 }
@@ -59,7 +46,7 @@ fn later(ui: &Weak<Ui>, change: impl FnOnce(&[String]) -> Vec<String> + 'static)
     glib::idle_add_local_once(move || {
         if let Some(ui) = ui.upgrade() {
             if let Err(e) = config::edit(change) {
-                show_error(&ui, &format!("Could not change {}: {e}", config::path().display()));
+                show_error(&ui, &view::edit_failed(&e));
                 return;
             }
             render(&ui);
@@ -75,19 +62,17 @@ fn link(ui: &Rc<Ui>, markup: &str, url: &str) -> gtk::Button {
         .halign(gtk::Align::Start)
         .css_classes(["slink"])
         .build();
-    b.set_child(Some(&label(&format!("<span foreground='{LINK}'>{markup}</span>"), false)));
+    b.set_child(Some(&label(&format!("<span foreground='{}'>{markup}</span>", view::hex(view::LINK)), false)));
     let (win, url) = (ui.win.downgrade(), url.to_string());
     b.connect_clicked(move |_| {
-        if let (true, Some(win)) = (report::openable(&url), win.upgrade()) {
+        if let (true, Some(win)) = (crate::report::openable(&url), win.upgrade()) {
             gtk::UriLauncher::new(&url).launch(Some(&win), gio::Cancellable::NONE, |_| {});
         }
     });
     b
 }
 
-fn card(ui: &Rc<Ui>, repo: &str, tab: &Tab, pos: usize, count: usize) -> gtk::Frame {
-    let cards = ui.cards.borrow();
-    let c = cards.get(repo);
+fn card(ui: &Rc<Ui>, c: &CardView, tab: &str) -> gtk::Frame {
     let frame = gtk::Frame::new(None);
     let inner = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
@@ -99,17 +84,14 @@ fn card(ui: &Rc<Ui>, repo: &str, tab: &Tab, pos: usize, count: usize) -> gtk::Fr
         .build();
     frame.set_child(Some(&inner));
     let top = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-    let dot = colour(c.map_or(Light::Grey, Card::light));
-    top.append(&label(&format!("<span foreground='{dot}' size='large'>●</span>"), true));
-    let url = c.and_then(|c| c.ok()).map(|d| d.url.clone()).filter(|u| !u.is_empty());
-    top.append(&link(ui, &format!("<b><u>{}</u></b>", esc(repo)), &url.unwrap_or_else(|| report::web_url(repo))));
+    top.append(&label(&format!("<span foreground='{}' size='large'>●</span>", colour(c.dot)), true));
+    top.append(&link(ui, &format!("<b><u>{}</u></b>", esc(&c.repo)), &c.url));
     top.append(&gtk::Box::builder().hexpand(true).build());
     let weak = Rc::downgrade(ui);
-    for (text, tip, step) in [("▲", "Move up", -1isize), ("▼", "Move down", 1)] {
+    for (text, tip, step, can) in [("▲", "Move up", -1isize, c.can_up), ("▼", "Move down", 1, c.can_down)] {
         let b = gtk::Button::builder().label(text).tooltip_text(tip).has_frame(false).build();
-        // own order only: under stars/forks the position comes from the numbers
-        b.set_sensitive(tab.sort == Sort::Mine && pos.checked_add_signed(step).is_some_and(|p| p < count));
-        let (w, repo, tab) = (weak.clone(), repo.to_string(), tab.name.clone());
+        b.set_sensitive(can);
+        let (w, repo, tab) = (weak.clone(), c.repo.clone(), tab.to_string());
         b.connect_clicked(move |_| {
             let (repo, tab) = (repo.clone(), tab.clone());
             later(&w, move |l| config::move_repo(l, &repo, &tab, step));
@@ -117,15 +99,15 @@ fn card(ui: &Rc<Ui>, repo: &str, tab: &Tab, pos: usize, count: usize) -> gtk::Fr
         top.append(&b);
     }
     let rm = gtk::Button::builder().label("✕").tooltip_text("Remove from this tab").has_frame(false).build();
-    let (w, repo_s, tab_s) = (weak.clone(), repo.to_string(), tab.name.clone());
+    let (w, repo_s, tab_s) = (weak.clone(), c.repo.clone(), tab.to_string());
     rm.connect_clicked(move |_| {
         let (repo, tab) = (repo_s.clone(), tab_s.clone());
         later(&w, move |l| config::remove_repo(l, &repo, Some(&tab)));
     });
     top.append(&rm);
     inner.append(&top);
-    let Some(c) = c else {
-        inner.append(&label("<small>checking…</small>", true));
+    let Some(status) = &c.status else {
+        inner.append(&label(&format!("<small>{}</small>", view::CHECKING), true));
         return frame;
     };
     // the lines on the left, live/private in the bottom-right corner beside them (no extra line)
@@ -133,18 +115,17 @@ fn card(ui: &Rc<Ui>, repo: &str, tab: &Tab, pos: usize, count: usize) -> gtk::Fr
     let text = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(4).hexpand(true).build();
     body.append(&text);
     inner.append(&body);
-    let lines = c.summary_lines();
-    text.append(&label(&format!("<small>{}</small>", esc(&lines[0].0)), true));
-    for (line, url) in &lines[1..] {
-        match url {
-            Some(u) => text.append(&link(ui, &esc(line), u)),
-            None => text.append(&label(&format!("   {}", esc(line)), true)),
+    text.append(&label(&format!("<small>{}</small>", esc(status)), true));
+    for line in &c.lines {
+        match &line.url {
+            Some(u) => text.append(&link(ui, &esc(&line.text), u)),
+            None => text.append(&label(&esc(&line.text), true)),
         }
     }
     for t in &c.todo {
-        text.append(&label(&format!("<b>→ {}</b>", esc(t)), true));
+        text.append(&label(&format!("<b>{}</b>", esc(t)), true));
     }
-    if let Some((word, light)) = report::visibility(Some(c)) {
+    if let Some((word, light)) = c.visibility {
         frame.add_css_class(word);
         let tag = gtk::Label::builder().halign(gtk::Align::End).valign(gtk::Align::End).build();
         tag.set_markup(&format!("<span foreground='{}'><small><b>{word}</b></small></span>", colour(light)));
@@ -153,7 +134,7 @@ fn card(ui: &Rc<Ui>, repo: &str, tab: &Tab, pos: usize, count: usize) -> gtk::Fr
     frame
 }
 
-fn page(ui: &Rc<Ui>, tab: &Tab) -> (gtk::Box, gtk::Label) {
+fn page(ui: &Rc<Ui>, tab: &TabView, repo_count: usize) -> (gtk::Box, gtk::Label) {
     let weak = Rc::downgrade(ui);
     let bx = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
@@ -164,13 +145,10 @@ fn page(ui: &Rc<Ui>, tab: &Tab) -> (gtk::Box, gtk::Label) {
         .margin_end(16)
         .build();
     let bar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    let entry = gtk::Entry::builder()
-        .placeholder_text("owner/name, or a GitHub, GitLab or Codeberg link")
-        .hexpand(true)
-        .build();
+    let entry = gtk::Entry::builder().placeholder_text(view::ADD_HINT).hexpand(true).build();
     let add = gtk::Button::with_label("Add repo");
-    let sort = gtk::DropDown::from_strings(&SORT_LABELS);
-    sort.set_selected(Sort::ALL.iter().position(|s| *s == tab.sort).unwrap_or(0) as u32);
+    let sort = gtk::DropDown::from_strings(&view::SORT_LABELS);
+    sort.set_selected(tab.sort as u32);
     sort.set_tooltip_text(Some("Order of this tab"));
     let drop_tab = gtk::Button::with_label("Remove tab");
     bar.append(&entry);
@@ -180,8 +158,7 @@ fn page(ui: &Rc<Ui>, tab: &Tab) -> (gtk::Box, gtk::Label) {
     bx.append(&bar);
     let msg = gtk::Label::builder().xalign(0.0).visible(false).build();
     bx.append(&msg);
-    let totals = report::totals_line(&tab.repos, &ui.cards.borrow());
-    bx.append(&label(&format!("<small>{}</small>", esc(&totals)), true));
+    bx.append(&label(&format!("<small>{}</small>", esc(&tab.totals)), true));
 
     let on_add = {
         let (w, entry, msg, name) = (weak.clone(), entry.clone(), msg.clone(), tab.name.clone());
@@ -192,11 +169,7 @@ fn page(ui: &Rc<Ui>, tab: &Tab) -> (gtk::Box, gtk::Label) {
             }
             None => {
                 msg.set_visible(true);
-                msg.set_markup(&format!(
-                    "<span foreground='{}'>Type owner/name (GitHub), gitlab.com/group/project, \
-                     codeberg.org/owner/repo, or paste a link</span>",
-                    colour(Light::Red)
-                ));
+                msg.set_markup(&format!("<span foreground='{}'>{}</span>", colour(Light::Red), esc(view::BAD_REPO)));
             }
         }
     };
@@ -214,12 +187,13 @@ fn page(ui: &Rc<Ui>, tab: &Tab) -> (gtk::Box, gtk::Label) {
         });
     }
     {
-        let (w, name, n) = (weak.clone(), tab.name.clone(), tab.repos.len());
+        let (w, name) = (weak.clone(), tab.name.clone());
         drop_tab.connect_clicked(move |_| {
             let Some(ui) = w.upgrade() else { return };
+            let (question, detail) = view::remove_tab_question(&name, repo_count);
             let ask = gtk::AlertDialog::builder()
-                .message(format!("Remove the tab “{name}”?"))
-                .detail(format!("Its {n} repo(s) leave the list. Nothing changes on GitHub."))
+                .message(question)
+                .detail(detail)
                 .buttons(["Cancel", "Remove"])
                 .cancel_button(0)
                 .default_button(0)
@@ -234,20 +208,15 @@ fn page(ui: &Rc<Ui>, tab: &Tab) -> (gtk::Box, gtk::Label) {
     }
 
     let cards = gtk::Box::new(gtk::Orientation::Vertical, 14);
-    let repos = report::ordered(&tab.repos, tab.sort, &ui.cards.borrow());
-    for (pos, repo) in repos.iter().enumerate() {
-        cards.append(&card(ui, repo, tab, pos, repos.len()));
+    for c in &tab.cards {
+        cards.append(&card(ui, c, &tab.name));
     }
-    if repos.is_empty() {
-        cards.append(&label("No repos in this tab yet. Add one above.", true));
+    if tab.cards.is_empty() {
+        cards.append(&label(view::NO_REPOS, true));
     }
     bx.append(&gtk::ScrolledWindow::builder().child(&cards).vexpand(true).build());
-    let worst = {
-        let all = ui.cards.borrow();
-        repos.iter().map(|r| all.get(r).map_or(Light::Grey, Card::light)).max().unwrap_or(Light::Grey)
-    };
     let tab_label = gtk::Label::new(None);
-    tab_label.set_markup(&format!("<span foreground='{}'>●</span> {}", colour(worst), esc(&tab.name)));
+    tab_label.set_markup(&format!("<span foreground='{}'>●</span> {}", colour(tab.dot), esc(&tab.name)));
     (bx, tab_label)
 }
 
@@ -267,49 +236,37 @@ fn render(ui: &Rc<Ui>) {
         ui.book.remove_page(None);
     }
     for tab in &tabs {
-        let (child, lab) = page(ui, tab);
+        let v = ui.checks.borrow().tab(tab);
+        let (child, lab) = page(ui, &v, tab.repos.len());
         ui.book.append_page(&child, Some(&lab));
     }
     ui.book.set_current_page(Some(current.min(ui.book.n_pages().saturating_sub(1))));
     ui.building.set(false);
 
-    let repos = config::all_repos(&tabs);
-    let todo: Vec<String> = {
-        let (cards, busy) = (ui.cards.borrow(), ui.busy.borrow());
-        repos.iter().filter(|r| !cards.contains_key(*r) && !busy.contains(*r)).cloned().collect()
+    let (line, checking) = {
+        let ch = ui.checks.borrow();
+        (ch.status_line(&tabs), ch.checking(&tabs))
     };
-    let checking = !ui.busy.borrow().is_empty() || !todo.is_empty();
-    let stamp = ui.stamp.borrow();
-    ui.status.set_markup(&format!(
-        "<small>{}{}{} repos in {} tab(s) — all tabs: {}</small>",
-        if checking { "checking… " } else { "" },
-        if stamp.is_empty() { String::new() } else { format!("checked {stamp} — ") },
-        repos.len(),
-        tabs.len(),
-        esc(&report::totals_line(&repos, &ui.cards.borrow()))
-    ));
-    drop(stamp);
+    ui.status.set_markup(&format!("<small>{}</small>", esc(&line)));
     ui.refresh.set_sensitive(!checking);
     if !checking {
         snapshot_if_asked(ui);
     }
+    let todo = ui.checks.borrow_mut().start(&tabs);
     if todo.is_empty() {
         return;
     }
-    ui.busy.borrow_mut().extend(todo.iter().cloned());
     let weak = Rc::downgrade(ui);
-    let asked = todo.clone();
     glib::MainContext::default().spawn_local(async move {
-        let mut found = gio::spawn_blocking(move || report::check_all(&todo)).await.unwrap_or_default();
+        let asked = todo.clone();
+        // a crashed worker still answers: Checks::apply gives its repos error cards
+        let done = gio::spawn_blocking(move || view::run_checks(todo))
+            .await
+            .unwrap_or_else(|_| view::Done { asked, found: Default::default() });
         let Some(ui) = weak.upgrade() else { return };
-        for r in asked {
-            ui.busy.borrow_mut().remove(&r);
-            // a crashed check must not leave the card "checking…" forever
-            found.entry(r.clone()).or_insert_with(|| Card::crashed(&r));
-        }
-        ui.cards.borrow_mut().extend(found);
-        *ui.stamp.borrow_mut() =
+        let stamp =
             glib::DateTime::now_local().and_then(|t| t.format("%H:%M")).map_or_else(|_| String::new(), String::from);
+        ui.checks.borrow_mut().apply(done, stamp);
         render(&ui);
     });
 }
@@ -344,9 +301,9 @@ fn activate(app: &gtk::Application, shown: &RefCell<Weak<Ui>>) {
     if let Some(open) = app.windows().first() {
         open.present();
         if let Some(ui) = shown.borrow().upgrade()
-            && ui.busy.borrow().is_empty()
+            && !ui.checks.borrow().busy()
         {
-            ui.cards.borrow_mut().clear();
+            ui.checks.borrow_mut().clear();
             render(&ui);
         }
         return;
@@ -388,15 +345,13 @@ fn activate(app: &gtk::Application, shown: &RefCell<Weak<Ui>>) {
         book,
         status,
         refresh: refresh.clone(),
-        cards: RefCell::default(),
-        busy: RefCell::default(),
-        stamp: RefCell::default(),
+        checks: RefCell::default(),
         building: Cell::new(false),
     });
     let w = Rc::downgrade(&ui);
     refresh.connect_clicked(move |_| {
         if let Some(ui) = w.upgrade() {
-            ui.cards.borrow_mut().clear();
+            ui.checks.borrow_mut().clear();
             render(&ui);
         }
     });
@@ -407,7 +362,7 @@ fn activate(app: &gtk::Application, shown: &RefCell<Weak<Ui>>) {
         new_tab_btn.popdown();
         let n = name.clone();
         if let Err(e) = config::edit(move |l| config::add_tab(l, &n)) {
-            show_error(&ui, &format!("Could not change {}: {e}", config::path().display()));
+            show_error(&ui, &view::edit_failed(&e));
             return;
         }
         render(&ui);
