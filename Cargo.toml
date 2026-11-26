@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 regex = { version = "1", default-features = false, features = ["std", "unicode-case", "unicode-perl"] }
+serde = { version = "1", features = ["derive"] }
 # preserve_order: editing ~/.claude/settings.json must keep the user's key order.
 serde_json = { version = "1", features = ["preserve_order"] }
 

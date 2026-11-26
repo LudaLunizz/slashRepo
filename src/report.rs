@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::config::{CODEBERG, Sort, Tab};
-use crate::forge::{self, Net};
+use crate::config::{Sort, Tab};
+use crate::forge::{self, Forge, ForgeError, Net};
 
 pub struct Release {
     pub tag: String,
@@ -19,7 +19,7 @@ pub struct Pr {
     pub url: Option<String>,
     pub draft: bool,
     pub by: String,
-    pub ci: String,
+    pub ci: CheckState,
 }
 
 pub struct Issue {
@@ -30,7 +30,48 @@ pub struct Issue {
     pub labels: Vec<String>,
 }
 
-/// What one forge call returns. `ci` uses GitHub's words (SUCCESS, FAILURE, ERROR, PENDING, NONE).
+/// Where the checks on a commit stand, read once from each forge's own words (src/forge.rs).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CheckState {
+    Passed,
+    Failed,
+    /// the check could not run (GitHub/Codeberg "error")
+    Errored,
+    Pending,
+    /// nothing reports on the commit
+    NoChecks,
+    /// a state this program does not know yet, lower case; shown as is, never taken as green
+    Unknown(String),
+}
+
+impl CheckState {
+    pub fn unknown(word: &str) -> Self {
+        CheckState::Unknown(word.to_lowercase())
+    }
+
+    /// The word on the card ("checks failure", "main CI: success").
+    pub fn word(&self) -> &str {
+        match self {
+            CheckState::Passed => "success",
+            CheckState::Failed => "failure",
+            CheckState::Errored => "error",
+            CheckState::Pending => "pending",
+            CheckState::NoChecks => "none",
+            CheckState::Unknown(w) => w,
+        }
+    }
+
+    pub fn red(&self) -> bool {
+        matches!(self, CheckState::Failed | CheckState::Errored)
+    }
+
+    /// Ready for review as far as checks go: passed, or nothing to wait for.
+    pub fn clear(&self) -> bool {
+        matches!(self, CheckState::Passed | CheckState::NoChecks)
+    }
+}
+
+/// What one forge call returns.
 pub struct Fetched {
     pub url: String,
     pub pushed: String,
@@ -40,7 +81,7 @@ pub struct Fetched {
     /// "PR #" or "MR !" (GitLab)
     pub pr: &'static str,
     pub unreleased: Option<u64>,
-    pub ci: String,
+    pub ci: CheckState,
     pub release: Option<Release>,
     pub prs: Vec<Pr>,
     pub issues: Vec<Issue>,
@@ -52,7 +93,7 @@ pub struct Fetched {
 
 pub struct Card {
     pub repo: String,
-    pub result: Result<Fetched, String>,
+    pub result: Result<Fetched, ForgeError>,
     pub todo: Vec<String>,
 }
 
@@ -86,11 +127,13 @@ impl Light {
 
 const NOTHING: &str = "nothing to do";
 
-fn red(ci: &str) -> bool {
-    ci == "FAILURE" || ci == "ERROR"
-}
-
 impl Card {
+    /// A card for a check that never came back (the worker crashed).
+    pub fn crashed(repo: &str) -> Card {
+        let err = ForgeError::Internal;
+        Card { repo: repo.into(), todo: vec![err.fix(Forge::of(repo))], result: Err(err) }
+    }
+
     pub fn ok(&self) -> Option<&Fetched> {
         self.result.as_ref().ok()
     }
@@ -98,7 +141,7 @@ impl Card {
     pub fn light(&self) -> Light {
         match &self.result {
             Err(_) => Light::Red,
-            Ok(d) if red(&d.ci) || d.alerts > 0 => Light::Red,
+            Ok(d) if d.ci.red() || d.alerts > 0 => Light::Red,
             Ok(_) if self.todo == [NOTHING] => Light::Green,
             Ok(_) => Light::Orange,
         }
@@ -126,7 +169,7 @@ impl Card {
             format!(
                 "release: {rel}   |   {} CI: {}   |   last push {}   |   ★ {}  forks {}",
                 d.branch,
-                d.ci.to_lowercase(),
+                d.ci.word(),
                 age(&d.pushed),
                 d.stars,
                 d.forks
@@ -135,7 +178,7 @@ impl Card {
         )];
         for p in &d.prs {
             let draft = if p.draft { "draft, " } else { "" };
-            let text = format!("{}{} {}  [{draft}checks {}, by {}]", d.pr, p.n, p.title, p.ci.to_lowercase(), p.by);
+            let text = format!("{}{} {}  [{draft}checks {}, by {}]", d.pr, p.n, p.title, p.ci.word(), p.by);
             out.push((text, p.url.clone()));
         }
         for i in &d.issues {
@@ -152,16 +195,18 @@ impl Card {
 
 fn todo(d: &Fetched) -> Vec<String> {
     let mut todo = Vec::new();
-    if red(&d.ci) {
+    if d.ci.red() {
         todo.push(format!("CI is red on {}: fix first", d.branch));
+    } else if let CheckState::Unknown(w) = &d.ci {
+        todo.push(format!("CI on {} says \"{w}\", a state slashRepo does not know: look on the forge", d.branch));
     }
     if d.alerts > 0 {
         todo.push(format!("{} open Dependabot security alert(s)", d.alerts));
     }
     for p in d.prs.iter().filter(|p| !p.draft) {
-        if red(&p.ci) {
+        if p.ci.red() {
             todo.push(format!("{}{} has failing checks", d.pr, p.n));
-        } else if p.ci == "SUCCESS" || p.ci == "NONE" {
+        } else if p.ci.clear() {
             todo.push(format!("{}{} is green: review / merge", d.pr, p.n));
         }
     }
@@ -177,28 +222,15 @@ fn todo(d: &Fetched) -> Vec<String> {
     todo
 }
 
-/// GitHub owners have no dots, hosts do.
-fn host(full: &str) -> Option<&str> {
-    let first = full.split('/').next().unwrap_or("");
-    first.contains('.').then_some(first)
-}
-
 pub fn check_with(net: &dyn Net, full: &str) -> Card {
-    type Fetch = fn(&dyn Net, &str) -> forge::Res<Fetched>;
-    let (fetch, hint): (Fetch, _) = match host(full) {
-        None => (forge::github, "gh call failed: check `gh auth status`"),
-        Some(CODEBERG) => {
-            (forge::codeberg, "Codeberg call failed: check the name, or CODEBERG_TOKEN for a private repo")
-        }
-        Some(_) => (forge::gitlab, "GitLab call failed: check the name, or GITLAB_TOKEN for a private project"),
-    };
+    let forge = Forge::of(full);
     // a panic while reading one repo's answer becomes that repo's error card, not a dead window or
     // a crashed `--text` run
-    let got = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fetch(net, full)))
-        .unwrap_or_else(|_| Err("internal error while reading the answer".into()));
+    let got = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| forge.fetch(net, full)))
+        .unwrap_or(Err(ForgeError::Internal));
     match got {
         // one broken repo must not hide the others
-        Err(e) => Card { repo: full.into(), result: Err(e), todo: vec![hint.into()] },
+        Err(e) => Card { repo: full.into(), todo: vec![e.fix(forge)], result: Err(e) },
         Ok(d) => Card { repo: full.into(), todo: todo(&d), result: Ok(d) },
     }
 }
@@ -260,7 +292,7 @@ pub fn openable(url: &str) -> bool {
 }
 
 pub fn web_url(repo: &str) -> String {
-    match host(repo) {
+    match forge::host(repo) {
         Some(_) => format!("https://{repo}"),
         None => format!("https://github.com/{repo}"),
     }
@@ -347,7 +379,7 @@ mod tests {
             d.private = true;
         }
         assert_eq!(visibility(Some(&c)), Some(("private", Light::Blue)));
-        c.result = Err("down".into());
+        c.result = Err(ForgeError::Unreachable("down".into()));
         assert_eq!(visibility(Some(&c)), None);
         assert_eq!(visibility(None), None);
     }
@@ -361,7 +393,7 @@ mod tests {
             branch: "main".into(),
             pr: "PR #",
             unreleased: None,
-            ci: "SUCCESS".into(),
+            ci: CheckState::Passed,
             release: None,
             prs: vec![],
             issues: vec![],
@@ -381,7 +413,7 @@ mod tests {
             totals_line(&v(&["a/x", "a/z"]), &cards),
             "★ 5 stars · 2 forks in 1 repo (1 not counted: checking or failed)"
         );
-        cards.insert("a/e".into(), Card { repo: "a/e".into(), result: Err("x".into()), todo: vec![] });
+        cards.insert("a/e".into(), Card { repo: "a/e".into(), result: Err(ForgeError::Internal), todo: vec![] });
         assert_eq!(
             totals_line(&v(&["a/e"]), &cards),
             "★ 0 stars · 0 forks in 0 repos (1 not counted: checking or failed)"
@@ -445,8 +477,8 @@ mod tests {
         for repo in ["me/app", "codeberg.org/me/app", "gitlab.com/me/app"] {
             let card = check_with(&Panics, repo);
             assert_eq!(card.repo, repo);
-            assert!(card.result.is_err(), "{repo}");
-            assert!(!card.todo.is_empty());
+            assert_eq!(card.result.as_ref().err(), Some(&ForgeError::Internal), "{repo}");
+            assert_eq!(card.todo, ["press Refresh to try again"]);
         }
     }
 }
