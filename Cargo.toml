@@ -32,6 +32,10 @@ png = "0.18"
 ureq = { version = "3", default-features = false, features = ["native-tls-no-default"] }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_SystemInformation", "Win32_Security", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
 
+# Windows: tests that drive the real egui window (no GPU, no network; see src/gui_win.rs)
+[target.'cfg(windows)'.dev-dependencies]
+egui_kittest = { version = "0.37", default-features = false, features = ["eframe"] }
+
 [build-dependencies]
 # the icon and version info inside repo-status.exe (only used when building for Windows on Windows)
 winresource = { version = "0.1", default-features = false }
