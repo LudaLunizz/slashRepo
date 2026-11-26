@@ -25,12 +25,12 @@ impl TempHome {
     fn path(&self, rel: &str) -> PathBuf {
         self.0.join(rel)
     }
-    /// PATH has only this HOME's bin: no agent CLIs, no gh. (Windows: plus System32 and
-    /// PowerShell, which the Start Menu entry needs; the rest of the environment stays, Windows
-    /// needs SystemRoot and friends.)
-    fn run(&self, args: &[&str], stdin: Option<&str>, env: &[(&str, &Path)]) -> Output {
-        let mut c = Command::new(BIN);
-        c.args(args);
+    /// `program` with this HOME and a PATH of only this HOME's bin: no agent CLIs, no gh.
+    /// (Windows: plus System32 and PowerShell, which the Start Menu entry needs; the rest of the
+    /// environment stays, Windows needs SystemRoot and friends.) One of the two places a test may
+    /// start a process (see `every_process_starts_in_a_throwaway_home`).
+    fn command(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
+        let mut c = Command::new(program);
         #[cfg(unix)]
         c.env_clear().env("HOME", &self.0).env("PATH", self.path("bin"));
         #[cfg(windows)]
@@ -42,6 +42,12 @@ impl TempHome {
                 .env("LOCALAPPDATA", self.path("AppData/Local"))
                 .env("PATH", path.unwrap());
         }
+        c
+    }
+
+    fn run(&self, args: &[&str], stdin: Option<&str>, env: &[(&str, &Path)]) -> Output {
+        let mut c = self.command(BIN);
+        c.args(args);
         for (k, v) in env {
             c.env(k, v);
         }
@@ -54,6 +60,15 @@ impl TempHome {
         drop(child.stdin.take());
         child.wait_with_output().unwrap()
     }
+}
+
+/// The binary with an empty environment: no home folder at all. The other place a test may start
+/// a process.
+#[cfg(unix)]
+fn without_home() -> Command {
+    let mut c = Command::new(BIN);
+    c.env_clear();
+    c
 }
 
 impl Drop for TempHome {
@@ -281,7 +296,7 @@ fn install_sets_up_each_agent_present_and_only_those() {
         assert!(read(&h.path(".agents/skills/repo/SKILL.md")).contains("& '"), "PowerShell line missing");
     }
     assert_eq!(v["theme"], "x");
-    assert!(Command::new(&installed).arg("--version").output().unwrap().status.success());
+    assert!(h.command(&installed).arg("--version").output().unwrap().status.success());
 
     // A machine with none of the agents gets only the window.
     let bare = TempHome::new("install-bare");
@@ -401,7 +416,7 @@ fn install_keeps_the_mode_and_the_symlink_of_settings_json() {
 #[cfg(unix)]
 #[test]
 fn install_without_a_home_folder_stops_before_writing() {
-    let out = Command::new(BIN).arg("install").env_clear().output().unwrap();
+    let out = without_home().arg("install").output().unwrap();
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("HOME is not set"), "{:?}", out.stderr);
 }
@@ -503,4 +518,31 @@ fn uninstall_removes_the_trigger_units() {
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert!(!dir.join("slashrepo-trigger.path").exists() && !dir.join("slashrepo-trigger.service").exists());
     assert!(dir.join("other.service").exists(), "somebody else's unit");
+}
+
+/// A test that starts the binary with the real HOME could change the user's settings.json or repos
+/// list. Every process start in this file must sit in one of the two constructors that isolate it;
+/// the scan must find both, so a scan that reads nothing cannot pass.
+#[test]
+fn every_process_starts_in_a_throwaway_home() {
+    let source = include_str!("cli.rs");
+    let needle = concat!("Command", "::new(");
+    let allowed = ["command", "without_home"];
+    let (mut current, mut seen) = ("", Vec::new());
+    for (n, line) in source.lines().enumerate() {
+        if let Some(rest) = line.trim_start().split("fn ").nth(1).filter(|_| line.contains("fn ")) {
+            current = rest.split(['(', '<']).next().unwrap_or("");
+        }
+        if line.contains(needle) {
+            assert!(
+                allowed.contains(&current),
+                "line {}: a process started in fn {current}, not in {allowed:?}",
+                n + 1
+            );
+            seen.push(current);
+        }
+    }
+    for f in allowed {
+        assert!(seen.contains(&f), "the scan did not find the constructor {f}");
+    }
 }
