@@ -81,6 +81,7 @@ Then it hooks into every agent it finds — done.
 One install, all agents. The report itself never reaches the model in any of them. Only Claude Code can
 drop the prompt before the model sees it, so only there nothing at all is spent; the others still take one
 short turn to run the command. Runs in a sandbox too: see [Agents in a sandbox](#agents-in-a-sandbox).
+Which agents have actually been run is under [Limits](#limits).
 
 ## Tabs: your repos, your way
 
@@ -147,6 +148,15 @@ file (`--trigger` is Linux only).
   a line that starts with `/repo`. A prompt that is only that is blocked; a longer one goes through to the
   model with the window opened beside it. If the window cannot be started, nothing is blocked.
 - **Lists are capped:** up to 30 open PRs and 30 issues per repo, with an "and N more" line for issues.
+- **Tested with:** Claude Code and opencode have been run with `/repo`. Gemini CLI, Codex and Antigravity
+  have not: their files were checked against each agent's own docs on 26 Nov 2026
+  ([Gemini CLI](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/custom-commands.md),
+  [Codex](https://learn.chatgpt.com/docs/build-skills),
+  [Antigravity](https://antigravity.google/docs/skills.md)). None of these docs gives the Windows paths.
+  If one of them does not work for you, please open an issue.
+- **Gemini CLI asks first:** it shows the shell command in `/repo` and waits for your OK before it runs it,
+  unless a [policy](https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/policy-engine.md)
+  in `~/.gemini/policies/` allows it. slashRepo does not write one for you.
 - **Hosts:** GitHub, GitLab (one authenticated host) and codeberg.org. Dependabot alerts exist on GitHub only.
 - **Platforms:** Linux x86_64 and Windows 10/11 x86_64. The prebuilt Linux binary is built on Ubuntu 24.04,
   so it needs glibc 2.39 or newer; older systems build from source (Rust and the GTK 4 dev files).
