@@ -14,6 +14,7 @@ mod hook;
 mod install;
 mod report;
 mod uninstall;
+mod view;
 #[cfg(windows)]
 mod win;
 
