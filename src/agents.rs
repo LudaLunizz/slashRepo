@@ -206,6 +206,8 @@ mod tests {
         }
         assert_eq!(AGENTS[0].name, "Claude Code", "claude() writes AGENTS[0]'s file");
         assert_eq!(sh_quote("/home/a b/x"), "'/home/a b/x'");
-        assert_eq!(our_hooks(h, bin), ["/h/.local/bin/repo-status hook", "/h/.local/bin/repo-status-hook"]);
+        // the old hook is a joined path: `\` before `.local` on Windows
+        let old = h.join(".local/bin/repo-status-hook").to_string_lossy().into_owned();
+        assert_eq!(our_hooks(h, bin), [format!("{} hook", shell_path(bin)), old]);
     }
 }
