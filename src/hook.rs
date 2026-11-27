@@ -14,8 +14,9 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-static OPENS: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?im)\brepos? check\b|\bcheck (up on )?(the |my )?repos\b|^ */repo( |$)").unwrap());
+static OPENS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?im)\brepos? check\b|\bcheck (up on )?(the |my )?repos\b|^[ \t]*/repo(\s|$)").unwrap()
+});
 static ONLY: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)^\s*(/repo|(please )?(repos? check|check (up on )?(the |my )?repos)( now| please)?[.!]?)\s*$")
         .unwrap()
@@ -96,7 +97,18 @@ mod tests {
             assert_eq!(decide(p), (true, true), "{p}");
         }
         // mentioned inside a longer prompt: window opens, prompt goes through
-        for p in ["/repo and then fix the tab bug", "do a repo check, then bump the version", "hi\n/repo"] {
+        // a tab or a Windows line end after /repo counts as well
+        for p in ["/repo\r\n", "\t/repo\t", "/repo\r"] {
+            assert_eq!(decide(p), (true, true), "{p:?}");
+        }
+        for p in [
+            "/repo and then fix the tab bug",
+            "do a repo check, then bump the version",
+            "hi\n/repo",
+            "/repo\r\nand then the tab bug",
+            "/repo\tand more",
+            "hi\r\n/repo",
+        ] {
             assert_eq!(decide(p), (true, false), "{p}");
         }
         for p in [

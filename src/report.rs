@@ -84,6 +84,8 @@ pub struct Fetched {
     pub ci: CheckState,
     pub release: Option<Release>,
     pub prs: Vec<Pr>,
+    /// open PRs (MRs) on the forge; more than `prs` when the list was cut
+    pub pr_total: u64,
     pub issues: Vec<Issue>,
     pub issue_total: u64,
     pub alerts: u64,
@@ -195,6 +197,11 @@ impl Card {
             let draft = if p.draft { "draft, " } else { "" };
             let text = format!("{}{} {}  [{draft}checks {}, by {}]", d.pr, p.n, p.title, p.ci.word(), p.by);
             out.push((text, p.url.clone()));
+        }
+        let shown_prs = d.prs.len() as u64;
+        if d.pr_total > shown_prs {
+            let what = if d.pr.starts_with("MR") { "merge requests" } else { "pull requests" };
+            out.push((format!("... and {} more {what}", d.pr_total - shown_prs), None));
         }
         for i in &d.issues {
             let lab = if i.labels.is_empty() { String::new() } else { format!(" [{}]", i.labels.join(", ")) };
@@ -349,8 +356,9 @@ fn unix_time(iso: &str) -> Option<i64> {
 pub fn age_at(iso: &str, now: i64) -> String {
     match unix_time(iso) {
         None => "?".into(),
+        // a time ahead of this clock (clock skew) is "today", never "-1d ago"
         Some(t) => match (now - t).div_euclid(86400) {
-            0 => "today".into(),
+            ..=0 => "today".into(),
             d => format!("{d}d ago"),
         },
     }
@@ -412,6 +420,7 @@ mod tests {
             prs: vec![],
             issues: vec![],
             issue_total: 0,
+            pr_total: 0,
             alerts: 0,
             private: false,
         };
@@ -464,6 +473,8 @@ mod tests {
         assert_eq!(unix_time("1970-01-01T00:00:00Z"), Some(0));
         assert_eq!(unix_time("2000-03-01T00:00:00Z"), Some(951868800));
         assert_eq!(age_at("garbage", now), "?");
+        assert_eq!(age_at("2026-03-01T12:00:30Z", now), "today");
+        assert_eq!(age_at("2026-03-03T12:00:00Z", now), "today");
     }
 
     /// A net whose every call panics, to prove one broken repo only costs its own card.

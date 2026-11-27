@@ -760,6 +760,7 @@ mod tests {
             prs: vec![],
             issues: vec![],
             issue_total: 0,
+            pr_total: 0,
             alerts: 0,
             private,
         };

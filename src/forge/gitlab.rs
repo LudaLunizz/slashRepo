@@ -11,7 +11,7 @@ const GITLAB_QUERY: &str = "query($p:ID!){ project(fullPath:$p){
   webUrl lastActivityAt starCount forksCount visibility repository{rootRef}
   releases(first:1, sort:RELEASED_AT_DESC){ nodes{tagName releasedAt upcomingRelease} }
   issues(state:opened, first:30, sort:CREATED_DESC){ count nodes{iid title webUrl createdAt labels(first:3){nodes{title}}} }
-  mergeRequests(state:opened, first:30){ nodes{iid title webUrl draft author{username} headPipeline{status}} }
+  mergeRequests(state:opened, first:30){ count nodes{iid title webUrl draft author{username} headPipeline{status}} }
 }}";
 
 #[derive(Deserialize)]
@@ -42,7 +42,7 @@ struct GlProject {
     repository: Option<GlRepository>,
     releases: Nodes<GlRelease>,
     issues: GlIssues,
-    merge_requests: Nodes<GlMr>,
+    merge_requests: GlMrs,
 }
 
 #[derive(Deserialize)]
@@ -73,6 +73,13 @@ struct GlIssue {
     web_url: String,
     created_at: String,
     labels: Option<Nodes<Title>>,
+}
+
+/// `count` is all open MRs, `nodes` the first 30
+#[derive(Deserialize)]
+struct GlMrs {
+    count: u64,
+    nodes: Vec<GlMr>,
 }
 
 #[derive(Deserialize)]
@@ -115,8 +122,15 @@ fn gitlab_state(status: Option<&str>) -> CheckState {
 fn gitlab_auth(net: &dyn Net, host: &str) -> Option<String> {
     let token = net.env("GITLAB_TOKEN")?;
     let want = net.env("GITLAB_HOST").unwrap_or_else(|| "gitlab.com".into());
-    let want = want.strip_prefix("https://").unwrap_or(&want).trim_end_matches('/');
-    (host == want).then(|| format!("Bearer {token}"))
+    // "GitLab.example.com", "http://…" and "https://…/" all name the same host; the token itself
+    // still only goes out over https (the api addresses are https)
+    let want = want.trim();
+    let want = ["https://", "http://"]
+        .iter()
+        .find_map(|p| want.get(..p.len()).filter(|h| h.eq_ignore_ascii_case(p)).map(|_| &want[p.len()..]))
+        .unwrap_or(want)
+        .trim_end_matches('/');
+    host.eq_ignore_ascii_case(want).then(|| format!("Bearer {token}"))
 }
 
 pub(super) fn fetch(net: &dyn Net, full: &str) -> Res<Fetched> {
@@ -135,10 +149,15 @@ pub(super) fn fetch(net: &dyn Net, full: &str) -> Res<Fetched> {
     };
     let branch = r.repository.and_then(|x| x.root_ref).filter(|b| !b.is_empty()).unwrap_or_else(|| "main".into());
     let pid = quote(path, "");
-    let runs: Vec<GlPipeline> = parse(
-        "GitLab pipelines",
-        api(&format!("v4/projects/{pid}/pipelines?ref={}&per_page=1", quote(&branch, "/")), None)?.json,
-    )?;
+    // CI turned off, or hidden from you, answers 403/404 here although the project was read:
+    // that is "no checks", not a broken card
+    let runs: Vec<GlPipeline> =
+        match api(&format!("v4/projects/{pid}/pipelines?ref={}&per_page=1", quote(&branch, "/")), None) {
+            Ok(x) => parse("GitLab pipelines", x.json)?,
+            Err(ForgeError::Auth(_) | ForgeError::NotFound(_)) => vec![],
+            Err(e) => return Err(e),
+        };
+    let pr_total = r.merge_requests.count.max(r.merge_requests.nodes.len() as u64);
     let rel = r.releases.nodes.into_iter().next();
     let unreleased = rel.as_ref().and_then(|rel| {
         let p = format!(
@@ -188,6 +207,7 @@ pub(super) fn fetch(net: &dyn Net, full: &str) -> Res<Fetched> {
             })
             .collect(),
         issue_total: r.issues.count,
+        pr_total,
         alerts: 0,
         private: r.visibility != "public",
     })
@@ -209,7 +229,7 @@ mod tests {
                 "releases": {"nodes": [{"tagName": "v1", "releasedAt": "2026-01-01T00:00:00Z", "upcomingRelease": false}]},
                 "issues": {"count": 1, "nodes": [{"iid": "4", "title": "bug", "webUrl": "https://gitlab.com/g/p/-/issues/4",
                     "createdAt": "2026-01-01T00:00:00.123Z", "labels": {"nodes": [{"title": "bug"}]}}]},
-                "mergeRequests": {"nodes": [{"iid": "9", "title": "fix", "webUrl": "https://gitlab.com/g/p/-/merge_requests/9",
+                "mergeRequests": {"count": 31, "nodes": [{"iid": "9", "title": "fix", "webUrl": "https://gitlab.com/g/p/-/merge_requests/9",
                     "draft": false, "author": {"username": "x"}, "headPipeline": {"status": "FAILED"}}]}}}}));
         }
         if url.contains("/pipelines") {
@@ -233,12 +253,52 @@ mod tests {
                 Some("https://gitlab.com/g/p/-/merge_requests/9".to_string())
             )
         );
+        // 31 open, 1 in the list: the rest is said, not dropped
+        assert_eq!(ok.pr_total, 31);
+        assert_eq!(card.summary_lines()[2], ("... and 30 more merge requests".to_string(), None));
         assert_eq!(card.light(), Light::Orange);
         assert!(net.sent.lock().unwrap().iter().all(|(_, a)| a.as_deref() == Some("Bearer secret")));
         net.sent.lock().unwrap().clear();
         check_with(&net, "git.example.org/g/p");
         let sent = net.sent.lock().unwrap();
         assert!(!sent.is_empty() && sent.iter().all(|(_, a)| a.is_none()), "{sent:?}");
+    }
+
+    /// The project reads fine, but /pipelines answers 403 (CI/CD turned off for it).
+    struct NoCi;
+    impl Net for NoCi {
+        fn gh(&self, _: &[&str]) -> Res<Value> {
+            unreachable!()
+        }
+        fn http(&self, url: &str, _: Option<&str>, _: Option<&Value>) -> Res<Reply> {
+            if url.contains("/pipelines") {
+                return Err(ForgeError::Auth(format!("HTTP 403 from {url}")));
+            }
+            Ok(gitlab_answer(url))
+        }
+    }
+
+    #[test]
+    fn ci_turned_off_is_no_checks_not_an_error_card() {
+        let card = check_with(&NoCi, "gitlab.com/g/p");
+        let ok = card.ok().expect("the card stays");
+        assert_eq!((&ok.ci, ok.stars), (&CheckState::NoChecks, 7));
+    }
+
+    #[test]
+    fn gitlab_host_is_matched_without_case_or_scheme() {
+        for want in
+            ["gitlab.example.com", "GitLab.Example.com", "http://gitlab.example.com", "https://gitlab.example.com/"]
+        {
+            let net = Fake {
+                sent: Mutex::new(vec![]),
+                answer: gitlab_answer,
+                env: vec![("GITLAB_TOKEN", "t"), ("GITLAB_HOST", want)],
+            };
+            assert_eq!(gitlab_auth(&net, "gitlab.example.com").as_deref(), Some("Bearer t"), "{want}");
+            assert_eq!(gitlab_auth(&net, "gitlab.com"), None, "{want}");
+            assert_eq!(gitlab_auth(&net, "example.com"), None, "{want}");
+        }
     }
 
     #[test]

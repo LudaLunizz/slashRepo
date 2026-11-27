@@ -142,6 +142,7 @@ pub(super) fn fetch(net: &dyn Net, full: &str) -> Res<Fetched> {
         Some(b) => (b.name.clone(), rollup(b.target.as_ref())),
         None => (String::new(), CheckState::NoChecks),
     };
+    let pr_total = r.pull_requests.total_count;
     let rel = r.releases.nodes.into_iter().next();
     let unreleased = rel.as_ref().and_then(|rel| {
         let path = format!("repos/{full}/compare/{}...{branch}", rel.tag_name);
@@ -187,6 +188,7 @@ pub(super) fn fetch(net: &dyn Net, full: &str) -> Res<Fetched> {
             })
             .collect(),
         issue_total: r.issues.total_count,
+        pr_total,
         alerts: r.vulnerability_alerts.map_or(0, |a| a.total_count),
         private: r.is_private,
     })

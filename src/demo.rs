@@ -105,6 +105,7 @@ fn fetched(repo: &str) -> Result<Fetched, ForgeError> {
         prs: vec![],
         issues: vec![],
         issue_total: 0,
+        pr_total: 0,
         alerts: 0,
         private: false,
     };
@@ -157,6 +158,7 @@ fn fetched(repo: &str) -> Result<Fetched, ForgeError> {
         _ => return Err(ForgeError::NotFound("the demo only knows its own made-up repos".into())),
     }
     d.issue_total = d.issue_total.max(d.issues.len() as u64);
+    d.pr_total = d.pr_total.max(d.prs.len() as u64);
     Ok(d)
 }
 
