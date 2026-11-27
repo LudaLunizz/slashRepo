@@ -8,6 +8,7 @@
 
 mod agents;
 mod config;
+mod demo;
 mod forge;
 #[cfg_attr(windows, path = "gui_win.rs")]
 mod gui;
@@ -32,6 +33,7 @@ pub const APP_ID: &str = "io.github.ludalunizz.SlashRepo";
 const USAGE: &str = "usage:
   repo-status                         open the window
   repo-status open                    open the window in the background and return
+  repo-status --demo                  open the window with made-up repos (reads and changes nothing)
   repo-status --text [TAB]            print the report (all tabs, or one)
   repo-status --tabs                  list the tabs and their repos
   repo-status --add OWNER/NAME [TAB]  add a repo (default tab: My repos; a new tab name makes the tab)
@@ -221,6 +223,10 @@ fn main() -> ExitCode {
     }
     match args.as_slice() {
         [] => gui::run(),
+        ["--demo"] => {
+            demo::enable();
+            gui::run()
+        }
         ["open"] => match std::env::current_exe() {
             Ok(me) if hook::open(&me) => {
                 println!("Repo Status window opened.");

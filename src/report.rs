@@ -134,6 +134,21 @@ impl Card {
         Card { repo: repo.into(), todo: vec![err.fix(Forge::of(repo))], result: Err(err) }
     }
 
+    /// A forge's answer (or its error) with the to-dos that follow from it.
+    pub fn from_result(repo: &str, result: Result<Fetched, ForgeError>) -> Card {
+        let todo = match &result {
+            // one broken repo must not hide the others
+            Err(e) => vec![e.fix(Forge::of(repo))],
+            Ok(d) => todo(d),
+        };
+        Card { repo: repo.into(), todo, result }
+    }
+
+    /// Nothing asks for you on this repo.
+    pub fn clear(&self) -> bool {
+        self.result.is_ok() && self.todo == [NOTHING]
+    }
+
     pub fn ok(&self) -> Option<&Fetched> {
         self.result.as_ref().ok()
     }
@@ -228,15 +243,14 @@ pub fn check_with(net: &dyn Net, full: &str) -> Card {
     // a crashed `--text` run
     let got = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| forge.fetch(net, full)))
         .unwrap_or(Err(ForgeError::Internal));
-    match got {
-        // one broken repo must not hide the others
-        Err(e) => Card { repo: full.into(), todo: vec![e.fix(forge)], result: Err(e) },
-        Ok(d) => Card { repo: full.into(), todo: todo(&d), result: Ok(d) },
-    }
+    Card::from_result(full, got)
 }
 
 /// Check every repo, 8 at a time.
 pub fn check_all(repos: &[String]) -> HashMap<String, Card> {
+    if crate::demo::on() {
+        return repos.iter().map(|r| (r.clone(), crate::demo::check(r))).collect();
+    }
     let net = forge::RealNet::new();
     let cards = crate::par_map(repos, 8, |r| check_with(&net, r));
     repos.iter().cloned().zip(cards).collect()
@@ -342,7 +356,7 @@ pub fn age_at(iso: &str, now: i64) -> String {
     }
 }
 
-fn age(iso: &str) -> String {
+pub fn age(iso: &str) -> String {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
     age_at(iso, now)
 }
