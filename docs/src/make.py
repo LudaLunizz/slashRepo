@@ -8,7 +8,8 @@ the window pictures are taken from `repo-status --demo`, so they show made-up re
 Needs: firefox (for the drawn pictures), gtk4-broadwayd (for the window), Pillow, optipng (optional). Nothing appears on your desktop.
 window-windows.png is not made here: it is the picture the CI `windows` job saves
 (artifact repo-status-windows, file window-demo.png); round its corners with:
-    python3 docs/src/make.py --round FILE.png docs/window-windows.png
+    python3 docs/src/make.py --round FILE.png docs/window-windows.png [HEIGHT]
+(HEIGHT cuts the picture off there, between two cards: the runner's screen is lower than the window).
 """
 import pathlib, shutil, subprocess, sys, tempfile
 from PIL import Image, ImageDraw
@@ -49,7 +50,11 @@ def page(html, width, height, tmp):
 
 def main():
     if sys.argv[1:2] == ["--round"]:
-        rounded(Image.open(sys.argv[2])).save(sys.argv[3])
+        im = Image.open(sys.argv[2])
+        if len(sys.argv) > 4:
+            im = im.crop((0, 0, im.width, int(sys.argv[4])))
+        # the Windows picture is at single density: half the radius of the 2x pictures
+        rounded(im, radius=14 if im.width < 1200 else 28).save(sys.argv[3])
         return
     # work files under target/ and /tmp: a Firefox from a snap sees your home folder but not the
     # real /tmp, and the window binary needs a path without spaces
