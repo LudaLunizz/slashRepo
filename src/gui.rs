@@ -441,7 +441,7 @@ fn snapshot_soon(win: gtk::ApplicationWindow, tries: u32) {
             // not on screen yet (the made-up repos of --demo are "checked" before the window is)
             None if tries > 0 => return snapshot_soon(win, tries - 1),
             _ => {
-                eprintln!("snapshot failed (on broadway a browser must be connected so the window is drawn): {saved:?}")
+                eprintln!("snapshot failed: the window was never drawn ({saved:?})")
             }
         }
         if let Some(app) = win.application() {

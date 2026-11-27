@@ -1,0 +1,16 @@
+/* Shared look of the README pictures: the window's own palette (src/view.rs). */
+:root {
+  --bg: #15181c; --card: #1d2126; --raised: #272c33; --border: #333941;
+  --text: #d4d9df; --muted: #97a1ac; --grey: #768390;
+  --red: #ec6058; --orange: #d29922; --green: #57ab5a; --blue: #539bf5;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html { zoom: 2; background: var(--bg); }
+body { font-family: "Ubuntu Sans", "Noto Sans", sans-serif; color: var(--text); background: var(--bg); font-size: 15px; line-height: 1.45; }
+.muted { color: var(--muted); }
+.pill { display: inline-block; border-radius: 99px; padding: 3px 12px; font-weight: 600; }
+.pill.red { color: var(--red); background: #3e2b2e; } .pill.orange { color: var(--orange); background: #3a3425; }
+.pill.green { color: var(--green); background: #26372e; } .pill.blue { color: var(--blue); background: #263547; }
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--grey); }
+.dot.red { background: var(--red); } .dot.orange { background: var(--orange); } .dot.green { background: var(--green); }
+code { font-family: "Ubuntu Mono", "DejaVu Sans Mono", monospace; background: var(--raised); border: 1px solid var(--border); border-radius: 6px; padding: 1px 7px; }

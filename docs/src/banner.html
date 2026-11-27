@@ -1,0 +1,30 @@
+<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="style.css">
+<style>
+  body { width: 860px; height: 240px; display: flex; align-items: center; padding: 0 40px; gap: 26px;
+         background: linear-gradient(120deg, #1d2126 0%, #15181c 60%); }
+  .logo { width: 104px; height: 104px; flex: none; }
+  h1 { font-size: 46px; line-height: 1.1; letter-spacing: -0.5px; }
+  h1 span { color: var(--green); }
+  .tag { font-size: 20px; color: var(--muted); margin-top: 6px; white-space: nowrap; }
+  .tag b { color: var(--text); font-weight: 600; }
+  .mini { margin-left: auto; width: 262px; flex: none; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; font-size: 13.5px; }
+  .mini .row { display: flex; align-items: center; gap: 9px; padding: 5px 0; }
+  .mini .row b { font-weight: 600; } .mini .row .muted { margin-left: auto; }
+  .mini .pills { display: flex; gap: 6px; margin-bottom: 8px; } .mini .pill { padding: 2px 9px; font-size: 12.5px; }
+</style>
+<svg class="logo" viewBox="0 0 128 128">
+  <defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#22272e"/><stop offset="1" stop-color="#0d1117"/></linearGradient></defs>
+  <rect x="6" y="6" width="116" height="116" rx="26" fill="url(#bg)" stroke="#3d444d" stroke-width="2"/>
+  <g fill="none" stroke-linecap="round" stroke-width="9"><path d="M58 66 C 72 56, 92 64, 92 82" stroke="#d29922"/><path d="M36 98 L 80 30" stroke="#3fb950"/></g>
+  <g fill="#0d1117" stroke-width="7"><circle cx="36" cy="98" r="10" stroke="#3fb950"/><circle cx="80" cy="30" r="10" stroke="#3fb950"/><circle cx="92" cy="88" r="10" stroke="#d29922"/></g>
+</svg>
+<div>
+  <h1><span>/</span>slashRepo</h1>
+  <div class="tag">Your repos. <b>One glance.</b> Zero tokens.</div>
+</div>
+<div class="mini">
+  <div class="pills"><span class="pill red">1 needs a fix</span><span class="pill orange">3 to do</span><span class="pill green">3 clear</span></div>
+  <div class="row"><span class="dot green"></span><b>rocket-launcher</b><span class="muted">v1.4.2</span></div>
+  <div class="row"><span class="dot orange"></span><b>tiny-parser</b><span class="muted">PR #17</span></div>
+  <div class="row"><span class="dot red"></span><b>weather-cli</b><span class="muted">CI failing</span></div>
+</div>

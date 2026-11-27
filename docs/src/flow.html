@@ -1,0 +1,22 @@
+<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="style.css">
+<style>
+  body { width: 860px; height: 300px; padding: 26px 30px; }
+  h2 { font-size: 13px; letter-spacing: 0.08em; color: var(--muted); font-weight: 700; margin-bottom: 16px; }
+  .steps { display: flex; align-items: stretch; gap: 0; }
+  .step { flex: 1; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; }
+  .step .n { display: inline-block; width: 26px; height: 26px; line-height: 26px; text-align: center; border-radius: 50%; background: var(--raised); color: var(--text); font-weight: 700; margin-bottom: 10px; }
+  .step h3 { font-size: 18px; margin-bottom: 6px; }
+  .step p { color: var(--muted); font-size: 14.5px; }
+  .arrow { flex: none; width: 44px; display: flex; align-items: center; justify-content: center; color: var(--grey); font-size: 26px; }
+  .foot { margin-top: 18px; display: flex; align-items: center; gap: 12px; font-size: 16px; }
+  .foot .pill { font-size: 16px; padding: 4px 14px; }
+</style>
+<h2>HOW IT WORKS</h2>
+<div class="steps">
+  <div class="step"><span class="n">1</span><h3>You type <code>/repo</code></h3><p>In the coding agent you already have open.</p></div>
+  <div class="arrow">→</div>
+  <div class="step"><span class="n">2</span><h3>A hook catches it</h3><p>It opens the window and stops the prompt. The model never sees it.</p></div>
+  <div class="arrow">→</div>
+  <div class="step"><span class="n">3</span><h3>You read the window</h3><p>Releases, CI, PRs, issues and what to do next, for every repo.</p></div>
+</div>
+<div class="foot"><span class="pill green">0 tokens</span><span class="muted">The report goes to your screen, never into the model's context.</span></div>

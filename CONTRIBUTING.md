@@ -43,11 +43,26 @@ cargo test --locked
 sh -n install.sh
 ```
 
-CI opens the Windows window on its runner and keeps a picture of it (the `repo-status-windows`
-artifact, with the exe); it cannot open the Linux one. Say in the pull request whether you tried
-`repo-status` on a real desktop. Without one, `SLASHREPO_SNAPSHOT=out.png repo-status`
-saves the window to a PNG once every repo is checked and quits (on a broadway
-display a browser must be connected to it, or nothing is drawn).
+CI opens the Windows window on its runner and keeps two pictures of it (the `repo-status-windows`
+artifact, with the exe): `window.png` with real repos and `window-demo.png` with the made-up ones.
+It cannot open the Linux one. Say in the pull request whether you tried `repo-status` on a real desktop.
+
+`repo-status --demo` opens the window with made-up repos: no network, and your repo list is never
+written. Use it to look at a change to the window.
+
+### README pictures
+
+The pictures in `docs/` are made from `docs/src/`, never drawn by hand:
+
+```sh
+cargo build --release && python3 docs/src/make.py
+```
+
+It takes the window pictures from `repo-status --demo` on an off-screen display (nothing appears on
+your desktop) and draws the banner and the two explainers from the HTML files with a headless Firefox.
+`docs/window-windows.png` is `window-demo.png` from the CI artifact, with rounded corners
+(`python3 docs/src/make.py --round IN.png docs/window-windows.png`). Remake them when the window changes.
+`docs/social-preview.png` is the picture for the repo's social preview (set by hand in the repo settings).
 
 ## Conventions
 

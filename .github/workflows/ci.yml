@@ -59,6 +59,18 @@ jobs:
           if (-not $p.WaitForExit(180000)) { Stop-Process $p; throw "the window did not finish within 3 minutes" }
           if (-not (Test-Path $env:SLASHREPO_SNAPSHOT)) { throw "no snapshot (exit code $($p.ExitCode))" }
           Copy-Item $env:SLASHREPO_SNAPSHOT target\release\window.png
+      - name: The same with the made-up repos of --demo (the README picture)
+        shell: pwsh
+        run: |
+          $env:APPDATA = "$env:RUNNER_TEMP\appdata"
+          $env:SLASHREPO_SNAPSHOT = "$env:RUNNER_TEMP\window-demo.png"
+          $env:SLASHREPO_SNAPSHOT_SIZE = "940x940"
+          $before = Get-FileHash "$env:APPDATA\slashRepo\repos"
+          $p = Start-Process target\release\repo-status.exe -ArgumentList "--demo" -PassThru
+          if (-not $p.WaitForExit(120000)) { Stop-Process $p; throw "the demo window did not finish within 2 minutes" }
+          if (-not (Test-Path $env:SLASHREPO_SNAPSHOT)) { throw "no demo snapshot (exit code $($p.ExitCode))" }
+          if ((Get-FileHash "$env:APPDATA\slashRepo\repos").Hash -ne $before.Hash) { throw "--demo changed the repos file" }
+          Copy-Item $env:SLASHREPO_SNAPSHOT target\release\window-demo.png
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -66,4 +78,5 @@ jobs:
           path: |
             target/release/repo-status.exe
             target/release/window.png
+            target/release/window-demo.png
           if-no-files-found: warn

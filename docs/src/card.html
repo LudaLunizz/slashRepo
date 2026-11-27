@@ -1,0 +1,31 @@
+<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="style.css">
+<style>
+  body { width: 860px; height: 520px; padding: 24px 26px; }
+  h2 { font-size: 13px; letter-spacing: 0.08em; color: var(--muted); font-weight: 700; margin-bottom: 18px; }
+  .shot { position: relative; width: 808px; }
+  .shot img { width: 808px; display: block; }
+  .n { display: inline-block; width: 24px; height: 24px; line-height: 24px; text-align: center; border-radius: 50%;
+       background: var(--blue); color: #0d1117; font-weight: 700; font-size: 14px; flex: none; }
+  .shot .n { position: absolute; transform: translate(-50%, -50%); box-shadow: 0 0 0 3px var(--bg); }
+  .legend { margin-top: 22px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px 30px; }
+  .legend div { display: flex; gap: 11px; align-items: flex-start; font-size: 14.5px; color: var(--muted); }
+  .legend b { color: var(--text); font-weight: 600; }
+</style>
+<h2>HOW TO READ A CARD</h2>
+<div class="shot">
+  <img src="card-crop.png">
+  <span class="n" style="left: 21%; top: 9%">1</span>
+  <span class="n" style="left: 64%; top: 21.5%">2</span>
+  <span class="n" style="left: 34%; top: 40%">3</span>
+  <span class="n" style="left: 29%; top: 60%">4</span>
+  <span class="n" style="left: 47%; top: 82%">5</span>
+  <span class="n" style="left: 96.2%; top: 76%">6</span>
+</div>
+<div class="legend">
+  <div><span class="n">1</span><span><b>Status dot.</b> Green: all clear. Orange: something to do. Red: CI is broken or there is a security alert.</span></div>
+  <div><span class="n">2</span><span><b>The facts.</b> Latest release, CI on the default branch, last push, stars and forks.</span></div>
+  <div><span class="n">3</span><span><b>Open pull requests</b> with the state of their checks. Click a row to open it.</span></div>
+  <div><span class="n">4</span><span><b>Open issues</b> with labels and age. Long lists fold behind “Show more”.</span></div>
+  <div><span class="n">5</span><span><b>What to do next,</b> most urgent first. A clear repo just says “Nothing to do”.</span></div>
+  <div><span class="n">6</span><span><b>Who can see it.</b> “live” and a green border: public. “private” and a blue border: not public.</span></div>
+</div>
