@@ -242,7 +242,12 @@ fn groups(d: &Fetched) -> Vec<Group> {
             }
         });
         let name = if d.pr.starts_with("MR") { "Merge requests" } else { "Pull requests" };
-        out.push(Group { title: format!("{name} · {}", d.prs.len()), rows: rows.collect(), more: None });
+        let beyond = d.pr_total.saturating_sub(d.prs.len() as u64);
+        out.push(Group {
+            title: format!("{name} · {}", d.pr_total.max(d.prs.len() as u64)),
+            rows: rows.collect(),
+            more: (beyond > 0).then(|| format!("{beyond} more on the forge")),
+        });
     }
     if !d.issues.is_empty() {
         let rows = d.issues.iter().map(|i| Row {
@@ -450,6 +455,7 @@ mod tests {
             prs: vec![],
             issues: vec![issue("1", "https://h/1", &["bug"]), issue("2", "file:///etc/passwd", &[])],
             issue_total: 3,
+            pr_total: 0,
             alerts: 0,
             private: true,
         }
@@ -533,15 +539,34 @@ mod tests {
             Pr { n: "7".into(), title: "t".into(), url: None, draft: true, by: "ann".into(), ci: CheckState::NoChecks },
             Pr { n: "8".into(), title: "u".into(), url: None, draft: true, by: "bo".into(), ci: CheckState::Failed },
         ];
+        d.pr_total = 2;
         let v = card_view("gitlab.com/g/p", Some(&Card::from_result("gitlab.com/g/p", Ok(d))), true, 0, 1);
         let [mrs] = v.groups.as_slice() else { panic!("one group: {:?}", v.groups) };
-        assert_eq!(mrs.title, "Merge requests · 2");
+        assert_eq!((mrs.title.as_str(), mrs.more.as_deref()), ("Merge requests · 2", None));
         assert_eq!((mrs.rows[0].id.as_str(), mrs.rows[0].meta.as_str()), ("MR !7", "draft · no checks · by ann"));
         assert_eq!((mrs.rows[0].tone, mrs.rows[1].tone), (Some(Light::Grey), Some(Light::Red)));
         assert_eq!(mrs.rows[1].meta, "draft · checks failing · by bo");
         // drafts ask for nothing: the card is clear and draws "Nothing to do" itself
         assert!(v.clear && v.todo.is_empty());
         assert_eq!(v.dot, Light::Green);
+    }
+
+    #[test]
+    fn a_cut_pull_request_list_says_how_many_more() {
+        let mut d = fetched(0);
+        (d.issues, d.issue_total) = (vec![], 0);
+        d.prs = vec![Pr {
+            n: "1".into(),
+            title: "t".into(),
+            url: None,
+            draft: false,
+            by: "a".into(),
+            ci: CheckState::Pending,
+        }];
+        d.pr_total = 40;
+        let v = card_view("o/a", Some(&Card::from_result("o/a", Ok(d))), true, 0, 1);
+        let [prs] = v.groups.as_slice() else { panic!("one group: {:?}", v.groups) };
+        assert_eq!((prs.title.as_str(), prs.more.as_deref()), ("Pull requests · 40", Some("39 more on the forge")));
     }
 
     #[test]

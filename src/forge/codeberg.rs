@@ -118,11 +118,13 @@ pub(super) fn fetch(net: &dyn Net, full: &str) -> Res<Fetched> {
     } else {
         (vec![], None)
     };
-    let pulls: Vec<CbPull> = if r.has_pull_requests {
-        parse("Codeberg pulls", api(&format!("{base}/pulls?state=open&limit=30"))?.json)?
+    let (pulls, pull_head): (Vec<CbPull>, _) = if r.has_pull_requests {
+        let x = api(&format!("{base}/pulls?state=open&limit=30"))?;
+        (parse("Codeberg pulls", x.json)?, x.total)
     } else {
-        vec![]
+        (vec![], None)
     };
+    let pr_total = pull_head.unwrap_or(0).max(pulls.len() as u64);
     // the list has no check state: one small call per PR, 4 at a time
     let pr_ci = crate::par_map(&pulls, 4, |p| if p.draft { Ok(CheckState::NoChecks) } else { ci(&p.head.sha) });
     let pr_ci = pr_ci.into_iter().collect::<Res<Vec<_>>>()?;
@@ -148,6 +150,7 @@ pub(super) fn fetch(net: &dyn Net, full: &str) -> Res<Fetched> {
                 ci,
             })
             .collect(),
+        pr_total,
         issue_total: issue_head.unwrap_or(issues.len() as u64),
         issues: issues
             .into_iter()
