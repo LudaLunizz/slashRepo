@@ -1,6 +1,6 @@
 [package]
 name = "slashrepo"
-version = "0.6.7"
+version = "0.7.0"
 edition = "2024"
 rust-version = "1.92"
 description = "/repo for coding agents: a window with where each of your repos stands (release, CI, PRs, issues, to-dos)"
