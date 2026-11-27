@@ -61,7 +61,7 @@ cargo build --release && python3 docs/src/make.py
 It takes the window pictures from `repo-status --demo` on an off-screen display (nothing appears on
 your desktop) and draws the banner and the two explainers from the HTML files with a headless Firefox.
 `docs/window-windows.png` is `window-demo.png` from the CI artifact, with rounded corners
-(`python3 docs/src/make.py --round IN.png docs/window-windows.png`). Remake them when the window changes.
+(`python3 docs/src/make.py --round IN.png docs/window-windows.png 632`). Remake them when the window changes.
 `docs/social-preview.png` is the picture for the repo's social preview (set by hand in the repo settings).
 
 ## Conventions
