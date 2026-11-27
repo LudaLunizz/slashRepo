@@ -245,6 +245,9 @@ fn read_lines_at(p: &Path) -> std::io::Result<Option<Vec<String>>> {
 }
 
 pub fn read_lines() -> std::io::Result<Option<Vec<String>>> {
+    if crate::demo::on() {
+        return Ok(Some(crate::demo::lines()));
+    }
     read_lines_at(&path())
 }
 
@@ -279,6 +282,11 @@ pub fn lock_path() -> PathBuf {
 /// Apply change to the config file; a missing file starts from own_repos(). A file that exists
 /// but cannot be read stops the edit and is left as it is.
 pub fn edit(change: impl FnOnce(&[String]) -> Vec<String>) -> std::io::Result<()> {
+    if crate::demo::on() {
+        // the demo's list lives in memory: your repos file is never touched
+        crate::demo::set_lines(change(&crate::demo::lines()));
+        return Ok(());
+    }
     let lock = lock_path();
     if let Some(dir) = lock.parent() {
         std::fs::create_dir_all(dir)?;

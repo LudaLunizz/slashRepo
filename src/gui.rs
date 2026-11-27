@@ -1,22 +1,33 @@
-//! The Repo Status window (GTK 4): one notebook tab per tab in the repos file, one card per repo.
+//! The Repo Status window (GTK 4): a row of tabs, one card per repo. Draws what src/view.rs says,
+//! in the window's own dark palette (the same on every desktop theme).
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
 use std::process::ExitCode;
 use std::rc::{Rc, Weak};
 
 use gtk::prelude::*;
-use gtk::{gdk, gio, glib};
+use gtk::{gdk, gio, glib, pango};
 
-use crate::config::{self, Sort};
+use crate::config::{self, Sort, Tab};
 use crate::report::Light;
-use crate::view::{self, CardView, Checks, TabView};
+use crate::view::{self, CardView, Checks, Group, Row, TabView, palette};
 
 fn colour(l: Light) -> String {
     view::hex(view::rgb(l))
 }
 
+/// css class of a tone: t-red, t-green, ...
+fn tone(l: Light) -> String {
+    format!("t-{}", l.as_str())
+}
+
 fn esc(t: &str) -> String {
     glib::markup_escape_text(t).to_string()
+}
+
+fn muted(t: &str) -> String {
+    format!("<span foreground='{}'>{}</span>", view::hex(palette::MUTED), esc(t))
 }
 
 fn label(markup: &str, selectable: bool) -> gtk::Label {
@@ -25,19 +36,79 @@ fn label(markup: &str, selectable: bool) -> gtk::Label {
     lb
 }
 
+fn text(t: &str, class: &str) -> gtk::Label {
+    gtk::Label::builder().label(t).xalign(0.0).css_classes([class]).build()
+}
+
+fn hbox(spacing: i32) -> gtk::Box {
+    gtk::Box::new(gtk::Orientation::Horizontal, spacing)
+}
+
+fn vbox(spacing: i32) -> gtk::Box {
+    gtk::Box::new(gtk::Orientation::Vertical, spacing)
+}
+
+/// The round status mark.
+fn dot(l: Light) -> gtk::Box {
+    gtk::Box::builder().css_classes(["sr-dot".to_string(), tone(l)]).valign(gtk::Align::Center).build()
+}
+
+fn clear(b: &gtk::Box) {
+    while let Some(child) = b.first_child() {
+        b.remove(&child);
+    }
+}
+
 struct Ui {
     win: gtk::ApplicationWindow,
-    book: gtk::Notebook,
+    pills: gtk::Box,
     status: gtk::Label,
+    error: gtk::Label,
     refresh: gtk::Button,
+    tab_strip: gtk::Box,
+    /// the add field, the order and "Remove tab": they work on the open tab
+    bar: gtk::Box,
+    entry: gtk::Entry,
+    entry_msg: gtk::Label,
+    sort: gtk::DropDown,
+    totals: gtk::Label,
+    scroll: gtk::ScrolledWindow,
     checks: RefCell<Checks>,
-    /// render() is building pages: the sort dropdown's notify must not write the file then
+    tabs: RefCell<Vec<Tab>>,
+    current: Cell<usize>,
+    /// folded lists the user opened ("repo\nPull requests"); they stay open over a refresh
+    unfolded: RefCell<HashSet<String>>,
+    /// render() is setting the order dropdown: its notify must not write the file then
     building: Cell<bool>,
 }
 
-/// A red line in the status bar.
+impl Ui {
+    fn tab(&self) -> Option<Tab> {
+        self.tabs.borrow().get(self.current.get()).cloned()
+    }
+
+    fn show_tab(self: &Rc<Self>, i: usize) {
+        if i != self.current.get() && i < self.tabs.borrow().len() {
+            self.current.set(i);
+            self.scroll.vadjustment().set_value(0.0);
+            self.entry_msg.set_visible(false);
+            render(self);
+        }
+    }
+
+    fn refresh(self: &Rc<Self>) {
+        if !self.checks.borrow().busy() {
+            self.checks.borrow_mut().clear();
+            self.error.set_visible(false);
+            render(self);
+        }
+    }
+}
+
+/// A red line under the top bar; it stays until the next change that works.
 fn show_error(ui: &Ui, msg: &str) {
-    ui.status.set_markup(&format!("<span foreground='{}'>{}</span>", colour(Light::Red), esc(msg)));
+    ui.error.set_text(msg);
+    ui.error.set_visible(true);
 }
 
 /// Run an edit, then redraw, outside the signal of the widget the redraw destroys.
@@ -49,20 +120,15 @@ fn later(ui: &Weak<Ui>, change: impl FnOnce(&[String]) -> Vec<String> + 'static)
                 show_error(&ui, &view::edit_failed(&e));
                 return;
             }
+            ui.error.set_visible(false);
             render(&ui);
         }
     });
 }
 
 /// A flat button that opens url: a link inside a selectable label starts a selection on click.
-fn link(ui: &Rc<Ui>, markup: &str, url: &str) -> gtk::Button {
-    let b = gtk::Button::builder()
-        .has_frame(false)
-        .tooltip_text(format!("Open {url}"))
-        .halign(gtk::Align::Start)
-        .css_classes(["slink"])
-        .build();
-    b.set_child(Some(&label(&format!("<span foreground='{}'>{markup}</span>", view::hex(view::LINK)), false)));
+fn link(ui: &Rc<Ui>, child: &impl IsA<gtk::Widget>, url: &str, tip: &str, class: &str) -> gtk::Button {
+    let b = gtk::Button::builder().has_frame(false).tooltip_text(tip).css_classes([class]).child(child).build();
     let (win, url) = (ui.win.downgrade(), url.to_string());
     b.connect_clicked(move |_| {
         if let (true, Some(win)) = (crate::report::openable(&url), win.upgrade()) {
@@ -72,24 +138,110 @@ fn link(ui: &Rc<Ui>, markup: &str, url: &str) -> gtk::Button {
     b
 }
 
-fn card(ui: &Rc<Ui>, c: &CardView, tab: &str) -> gtk::Frame {
-    let frame = gtk::Frame::new(None);
-    let inner = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(4)
-        .margin_top(8)
-        .margin_bottom(8)
-        .margin_start(10)
-        .margin_end(10)
+/// ▲ ▼ ✕: quiet until the pointer is on them.
+fn icon_button(glyph: &str, tip: &str) -> gtk::Button {
+    gtk::Button::builder().label(glyph).tooltip_text(tip).has_frame(false).css_classes(["sr-icon"]).build()
+}
+
+/// One PR or issue: mark, number, title (cut with … when the window is narrow), labels, details.
+fn row(ui: &Rc<Ui>, r: &Row) -> gtk::Widget {
+    let line = hbox(8);
+    if let Some(l) = r.tone {
+        line.append(&dot(l));
+    }
+    line.append(&text(&r.id, "sr-muted"));
+    let title = gtk::Label::builder()
+        .label(&r.title)
+        .xalign(0.0)
+        .hexpand(true)
+        .ellipsize(pango::EllipsizeMode::End)
+        .width_chars(8)
         .build();
-    frame.set_child(Some(&inner));
-    let top = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-    top.append(&label(&format!("<span foreground='{}' size='large'>●</span>", colour(c.dot)), true));
-    top.append(&link(ui, &format!("<b><u>{}</u></b>", esc(&c.repo)), &c.url));
+    line.append(&title);
+    for l in &r.labels {
+        line.append(&text(l, "sr-tag"));
+    }
+    line.append(&text(&r.meta, "sr-muted"));
+    match &r.url {
+        Some(u) => link(ui, &line, u, &format!("{} {}\nOpen {u}", r.id, r.title), "sr-row").upcast(),
+        None => {
+            line.add_css_class("sr-row-plain");
+            line.set_tooltip_text(Some(&format!("{} {}", r.id, r.title)));
+            line.upcast()
+        }
+    }
+}
+
+/// "PULL REQUESTS · 6", the first rows, and the rest behind "Show 3 more".
+fn group(ui: &Rc<Ui>, repo: &str, g: &Group) -> gtk::Box {
+    let bx = vbox(0);
+    bx.append(&text(&g.title.to_uppercase(), "sr-group"));
+    let (shown, folded) = g.rows.split_at(g.rows.len().min(view::FOLD));
+    for r in shown {
+        bx.append(&row(ui, r));
+    }
+    if !folded.is_empty() {
+        let key = format!("{repo}\n{}", g.title.split(" · ").next().unwrap_or_default());
+        let open = ui.unfolded.borrow().contains(&key);
+        let rest = vbox(0);
+        for r in folded {
+            rest.append(&row(ui, r));
+        }
+        let more = gtk::Revealer::builder().child(&rest).reveal_child(open).build();
+        let toggle = gtk::Button::builder()
+            .label(view::fold_text(folded.len(), open))
+            .has_frame(false)
+            .halign(gtk::Align::Start)
+            .css_classes(["sr-more"])
+            .build();
+        let (weak, more2, hidden) = (Rc::downgrade(ui), more.clone(), folded.len());
+        toggle.connect_clicked(move |b| {
+            let Some(ui) = weak.upgrade() else { return };
+            let open = !more2.reveals_child();
+            more2.set_reveal_child(open);
+            b.set_label(&view::fold_text(hidden, open));
+            let mut set = ui.unfolded.borrow_mut();
+            if open {
+                set.insert(key.clone());
+            } else {
+                set.remove(&key);
+            }
+        });
+        bx.append(&more);
+        bx.append(&toggle);
+    }
+    if let Some(m) = &g.more {
+        bx.append(&text(m, "sr-beyond"));
+    }
+    bx
+}
+
+/// "release v1.4.2 · 3d ago   CI on main ● passing   …" as one line that wraps between facts.
+fn facts_markup(c: &CardView) -> String {
+    let nb = |t: &str| esc(t).replace(' ', "\u{a0}");
+    let one = |f: &view::Fact| {
+        let value = match f.tone {
+            Light::Grey => nb(&f.value),
+            l => format!("<span foreground='{}'>●\u{a0}{}</span>", colour(l), nb(&f.value)),
+        };
+        format!("<span foreground='{}'>{}</span>\u{a0}{value}", view::hex(palette::MUTED), nb(&f.label))
+    };
+    c.facts.iter().map(one).collect::<Vec<_>>().join("\u{2003} ")
+}
+
+fn card(ui: &Rc<Ui>, c: &CardView, tab: &str) -> gtk::Box {
+    let bx = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(8).css_classes(["sr-card"]).build();
+    let top = hbox(8);
+    top.append(&dot(c.dot));
+    let (owner, name) = view::split_name(&c.repo);
+    let title = label(&format!("{}<b>{}</b>", muted(owner), esc(name)), false);
+    title.set_ellipsize(pango::EllipsizeMode::Middle);
+    title.set_wrap(false);
+    top.append(&link(ui, &title, &c.url, &format!("Open {}", c.url), "sr-name"));
     top.append(&gtk::Box::builder().hexpand(true).build());
     let weak = Rc::downgrade(ui);
-    for (text, tip, step, can) in [("▲", "Move up", -1isize, c.can_up), ("▼", "Move down", 1, c.can_down)] {
-        let b = gtk::Button::builder().label(text).tooltip_text(tip).has_frame(false).build();
+    for (glyph, tip, step, can) in [("▲", "Move up", -1isize, c.can_up), ("▼", "Move down", 1, c.can_down)] {
+        let b = icon_button(glyph, tip);
         b.set_sensitive(can);
         let (w, repo, tab) = (weak.clone(), c.repo.clone(), tab.to_string());
         b.connect_clicked(move |_| {
@@ -98,126 +250,81 @@ fn card(ui: &Rc<Ui>, c: &CardView, tab: &str) -> gtk::Frame {
         });
         top.append(&b);
     }
-    let rm = gtk::Button::builder().label("✕").tooltip_text("Remove from this tab").has_frame(false).build();
+    let rm = icon_button("✕", "Remove from this tab");
     let (w, repo_s, tab_s) = (weak.clone(), c.repo.clone(), tab.to_string());
     rm.connect_clicked(move |_| {
         let (repo, tab) = (repo_s.clone(), tab_s.clone());
         later(&w, move |l| config::remove_repo(l, &repo, Some(&tab)));
     });
     top.append(&rm);
-    inner.append(&top);
-    let Some(status) = &c.status else {
-        inner.append(&label(&format!("<small>{}</small>", view::CHECKING), true));
-        return frame;
-    };
-    // the lines on the left, live/private in the bottom-right corner beside them (no extra line)
-    let body = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    let text = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(4).hexpand(true).build();
-    body.append(&text);
-    inner.append(&body);
-    text.append(&label(&format!("<small>{}</small>", esc(status)), true));
-    for line in &c.lines {
-        match &line.url {
-            Some(u) => text.append(&link(ui, &esc(&line.text), u)),
-            None => text.append(&label(&esc(&line.text), true)),
-        }
+    bx.append(&top);
+
+    if c.checking {
+        let wait = hbox(8);
+        wait.append(&gtk::Spinner::builder().spinning(true).build());
+        wait.append(&text(view::CHECKING, "sr-muted"));
+        bx.append(&wait);
+        return bx;
     }
-    for t in &c.todo {
-        text.append(&label(&format!("<b>{}</b>", esc(t)), true));
+    if let Some(e) = &c.error {
+        let lb = label(&esc(e), true);
+        lb.add_css_class("sr-error");
+        bx.append(&lb);
+    }
+    if !c.facts.is_empty() {
+        bx.append(&label(&facts_markup(c), true));
+    }
+    for g in &c.groups {
+        bx.append(&group(ui, &c.repo, g));
+    }
+    // the to-do on the left, live/private in the bottom-right corner beside it (no extra line)
+    let foot = hbox(8);
+    if c.clear {
+        let ok = label(&format!("✓ {}", view::NOTHING_TO_DO), true);
+        ok.add_css_class("sr-clear");
+        ok.set_hexpand(true);
+        ok.set_valign(gtk::Align::Center);
+        foot.append(&ok);
+    } else {
+        let todo = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(3)
+            .hexpand(true)
+            .css_classes(["sr-todo".to_string(), tone(c.dot)])
+            .build();
+        for t in &c.todo {
+            todo.append(&label(&format!("→ {}", esc(t)), true));
+        }
+        foot.append(&todo);
     }
     if let Some((word, light)) = c.visibility {
-        frame.add_css_class(word);
-        let tag = gtk::Label::builder().halign(gtk::Align::End).valign(gtk::Align::End).build();
-        tag.set_markup(&format!("<span foreground='{}'><small><b>{word}</b></small></span>", colour(light)));
-        body.append(&tag);
+        bx.add_css_class(word);
+        let tag = text(word, "sr-vis");
+        tag.add_css_class(&tone(light));
+        tag.set_valign(gtk::Align::End);
+        tag.set_tooltip_text(Some(if word == "live" { "Public: anyone can see it" } else { "Private" }));
+        foot.append(&tag);
     }
-    frame
+    bx.append(&foot);
+    bx
 }
 
-fn page(ui: &Rc<Ui>, tab: &TabView, repo_count: usize) -> (gtk::Box, gtk::Label) {
+fn tab_button(ui: &Rc<Ui>, i: usize, v: &TabView, current: bool) -> gtk::Button {
+    let inner = hbox(7);
+    inner.append(&dot(v.dot));
+    inner.append(&gtk::Label::new(Some(&v.name)));
+    inner.append(&text(&v.cards.len().to_string(), "sr-count"));
+    let b = gtk::Button::builder().child(&inner).has_frame(false).css_classes(["sr-tab"]).build();
+    if current {
+        b.add_css_class("current");
+    }
     let weak = Rc::downgrade(ui);
-    let bx = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(8)
-        .margin_top(10)
-        .margin_bottom(10)
-        .margin_start(16)
-        .margin_end(16)
-        .build();
-    let bar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    let entry = gtk::Entry::builder().placeholder_text(view::ADD_HINT).hexpand(true).build();
-    let add = gtk::Button::with_label("Add repo");
-    let sort = gtk::DropDown::from_strings(&view::SORT_LABELS);
-    sort.set_selected(tab.sort as u32);
-    sort.set_tooltip_text(Some("Order of this tab"));
-    let drop_tab = gtk::Button::with_label("Remove tab");
-    bar.append(&entry);
-    bar.append(&add);
-    bar.append(&sort);
-    bar.append(&drop_tab);
-    bx.append(&bar);
-    let msg = gtk::Label::builder().xalign(0.0).visible(false).build();
-    bx.append(&msg);
-    bx.append(&label(&format!("<small>{}</small>", esc(&tab.totals)), true));
-
-    let on_add = {
-        let (w, entry, msg, name) = (weak.clone(), entry.clone(), msg.clone(), tab.name.clone());
-        move || match config::repo_name(&entry.text()) {
-            Some(repo) => {
-                let name = name.clone();
-                later(&w, move |l| config::add_repo(l, &repo, &name));
-            }
-            None => {
-                msg.set_visible(true);
-                msg.set_markup(&format!("<span foreground='{}'>{}</span>", colour(Light::Red), esc(view::BAD_REPO)));
-            }
+    b.connect_clicked(move |_| {
+        if let Some(ui) = weak.upgrade() {
+            ui.show_tab(i);
         }
-    };
-    let on_add2 = on_add.clone();
-    entry.connect_activate(move |_| on_add());
-    add.connect_clicked(move |_| on_add2());
-    {
-        let (w, name) = (weak.clone(), tab.name.clone());
-        sort.connect_selected_notify(move |d| {
-            if w.upgrade().is_none_or(|ui| ui.building.get()) {
-                return;
-            }
-            let (name, s) = (name.clone(), Sort::ALL[(d.selected() as usize).min(2)]);
-            later(&w, move |l| config::set_sort(l, &name, s));
-        });
-    }
-    {
-        let (w, name) = (weak.clone(), tab.name.clone());
-        drop_tab.connect_clicked(move |_| {
-            let Some(ui) = w.upgrade() else { return };
-            let (question, detail) = view::remove_tab_question(&name, repo_count);
-            let ask = gtk::AlertDialog::builder()
-                .message(question)
-                .detail(detail)
-                .buttons(["Cancel", "Remove"])
-                .cancel_button(0)
-                .default_button(0)
-                .build();
-            let (w, name) = (w.clone(), name.clone());
-            ask.choose(Some(&ui.win), gio::Cancellable::NONE, move |res| {
-                if res == Ok(1) {
-                    later(&w, move |l| config::remove_tab(l, &name));
-                }
-            });
-        });
-    }
-
-    let cards = gtk::Box::new(gtk::Orientation::Vertical, 14);
-    for c in &tab.cards {
-        cards.append(&card(ui, c, &tab.name));
-    }
-    if tab.cards.is_empty() {
-        cards.append(&label(view::NO_REPOS, true));
-    }
-    bx.append(&gtk::ScrolledWindow::builder().child(&cards).vexpand(true).build());
-    let tab_label = gtk::Label::new(None);
-    tab_label.set_markup(&format!("<span foreground='{}'>●</span> {}", colour(tab.dot), esc(&tab.name)));
-    (bx, tab_label)
+    });
+    b
 }
 
 fn render(ui: &Rc<Ui>) {
@@ -230,29 +337,57 @@ fn render(ui: &Rc<Ui>) {
             return;
         }
     };
-    ui.building.set(true);
-    let current = ui.book.current_page().unwrap_or(0);
-    while ui.book.n_pages() > 0 {
-        ui.book.remove_page(None);
-    }
-    for tab in &tabs {
-        let v = ui.checks.borrow().tab(tab);
-        let (child, lab) = page(ui, &v, tab.repos.len());
-        ui.book.append_page(&child, Some(&lab));
-    }
-    ui.book.set_current_page(Some(current.min(ui.book.n_pages().saturating_sub(1))));
-    ui.building.set(false);
+    let current = ui.current.get().min(tabs.len().saturating_sub(1));
+    ui.current.set(current);
+    let views: Vec<TabView> = tabs.iter().map(|t| ui.checks.borrow().tab(t)).collect();
 
-    let (line, checking) = {
+    clear(&ui.tab_strip);
+    for (i, v) in views.iter().enumerate() {
+        ui.tab_strip.append(&tab_button(ui, i, v, i == current));
+    }
+    let cards = vbox(12);
+    cards.add_css_class("sr-cards");
+    ui.bar.set_visible(!tabs.is_empty());
+    ui.totals.set_visible(!tabs.is_empty());
+    match views.get(current) {
+        Some(v) => {
+            ui.building.set(true);
+            ui.sort.set_selected(v.sort as u32);
+            ui.building.set(false);
+            ui.totals.set_text(&v.totals);
+            for c in &v.cards {
+                cards.append(&card(ui, c, &v.name));
+            }
+            if v.cards.is_empty() {
+                cards.append(&text(view::NO_REPOS, "sr-empty"));
+            }
+        }
+        None => cards.append(&text(view::NO_TABS, "sr-empty")),
+    }
+    // the scrolled window stays, so a refresh or a moved card keeps the place you scrolled to
+    ui.scroll.set_child(Some(&cards));
+
+    let (line, pills, checking) = {
         let ch = ui.checks.borrow();
-        (ch.status_line(&tabs), ch.checking(&tabs))
+        (ch.status_line(&tabs), ch.summary(&tabs).pills(), ch.checking(&tabs))
     };
-    ui.status.set_markup(&format!("<small>{}</small>", esc(&line)));
+    clear(&ui.pills);
+    for (words, light) in pills {
+        let p = text(&words, "sr-pill");
+        p.add_css_class(&tone(light));
+        ui.pills.append(&p);
+    }
+    ui.status.set_text(&line);
+    ui.status.set_tooltip_text(Some(&line));
     ui.refresh.set_sensitive(!checking);
+    *ui.tabs.borrow_mut() = tabs;
     if !checking {
         snapshot_if_asked(ui);
     }
-    let todo = ui.checks.borrow_mut().start(&tabs);
+    let todo = {
+        let tabs = ui.tabs.borrow();
+        ui.checks.borrow_mut().start(&tabs)
+    };
     if todo.is_empty() {
         return;
     }
@@ -272,26 +407,127 @@ fn render(ui: &Rc<Ui>) {
 }
 
 /// Developer aid (README pictures, checks without a desktop): with SLASHREPO_SNAPSHOT=FILE.png the
-/// window saves itself to FILE once every repo is checked, then quits.
+/// window saves itself to FILE once every repo is checked, then quits. SLASHREPO_SNAPSHOT_SCALE=2
+/// draws it twice as large (sharp on a high-density screen).
 fn snapshot_if_asked(ui: &Rc<Ui>) {
-    let Some(file) = std::env::var_os("SLASHREPO_SNAPSHOT") else { return };
-    let win = ui.win.clone();
+    if std::env::var_os("SLASHREPO_SNAPSHOT").is_some() {
+        snapshot_soon(ui.win.clone(), 20);
+    }
+}
+
+fn snapshot_soon(win: gtk::ApplicationWindow, tries: u32) {
     glib::timeout_add_local_once(std::time::Duration::from_millis(800), move || {
+        let Some(file) = std::env::var_os("SLASHREPO_SNAPSHOT") else { return };
+        let scale = std::env::var("SLASHREPO_SNAPSHOT_SCALE").ok().and_then(|s| s.parse::<f32>().ok());
+        let scale = scale.filter(|s| (1.0..=4.0).contains(s)).unwrap_or(1.0);
         // the window's own paintable draws nothing; its content does
         let Some(body) = win.child() else { return };
-        let (w, h) = (body.width(), body.height());
+        // SLASHREPO_SNAPSHOT_SIZE: lay the content out at that size even when the (off-screen)
+        // display is smaller than the picture asked for
+        let (w, h) = view::snapshot_size().unwrap_or((body.width(), body.height()));
+        if (w, h) != (body.width(), body.height()) {
+            body.allocate(w, h, -1, None);
+        }
         let snap = gtk::Snapshot::new();
+        snap.scale(scale, scale);
         gtk::WidgetPaintable::new(Some(&body)).snapshot(&snap, f64::from(w), f64::from(h));
-        let saved = snap.to_node().zip(win.native().and_then(|n| n.renderer())).map(|(node, r)| {
-            r.render_texture(node, Some(&gtk::graphene::Rect::new(0.0, 0.0, w as f32, h as f32))).save_to_png(&file)
-        });
-        if !matches!(saved, Some(Ok(()))) {
-            eprintln!("snapshot failed (on broadway a browser must be connected so the window is drawn): {saved:?}");
+        let area = gtk::graphene::Rect::new(0.0, 0.0, w as f32 * scale, h as f32 * scale);
+        let saved = snap
+            .to_node()
+            .zip(win.native().and_then(|n| n.renderer()))
+            .map(|(node, r)| r.render_texture(node, Some(&area)).save_to_png(&file));
+        match saved {
+            Some(Ok(())) => {}
+            // not on screen yet (the made-up repos of --demo are "checked" before the window is)
+            None if tries > 0 => return snapshot_soon(win, tries - 1),
+            _ => {
+                eprintln!("snapshot failed (on broadway a browser must be connected so the window is drawn): {saved:?}")
+            }
         }
         if let Some(app) = win.application() {
             app.quit();
         }
     });
+}
+
+/// The window's own look. Colours come from view::palette, so the Windows window matches.
+fn css() -> String {
+    let h = view::hex;
+    let (bg, card, raised, field) = (h(palette::BG), h(palette::CARD), h(palette::RAISED), h(palette::FIELD));
+    let (border, text, muted, link) = (h(palette::BORDER), h(palette::TEXT), h(palette::MUTED), h(view::LINK));
+    let mut css = format!(
+        "window.sr, window.sr .sr-body {{ background: {bg}; color: {text}; }}
+         .sr-top {{ padding: 14px 16px 4px 16px; }}
+         .sr-tabs {{ padding: 4px 12px 0 12px; }}
+         .sr-bar {{ padding: 6px 16px 0 16px; }}
+         .sr-totals {{ padding: 2px 18px 4px 18px; color: {muted}; }}
+         .sr-cards {{ padding: 6px 16px 18px 16px; }}
+         .sr-muted, .sr-status, .sr-beyond {{ color: {muted}; }}
+         .sr-beyond {{ padding: 2px 8px; }}
+         .sr-empty {{ color: {muted}; padding: 28px 8px; }}
+         .sr-error {{ color: {red}; }}
+         .sr-demo {{ color: {orange}; padding: 0 16px; }}
+         .sr-top .sr-error {{ padding: 0 16px; }}
+         .sr-dot {{ min-width: 10px; min-height: 10px; border-radius: 5px; background: {grey}; }}
+         .sr-pill {{ border-radius: 99px; padding: 3px 11px; font-weight: 600; }}
+         .sr-vis {{ border-radius: 99px; padding: 1px 9px; font-size: 0.85em; font-weight: 700; }}
+         .sr-count {{ border-radius: 99px; padding: 0 7px; font-size: 0.85em; color: {muted}; background: {bg}; }}
+         .sr-tag {{ border-radius: 99px; padding: 0 7px; font-size: 0.85em; color: {muted}; border: 1px solid {border}; }}
+         .sr-group {{ color: {muted}; font-size: 0.8em; font-weight: 700; letter-spacing: 0.06em; padding: 2px 0 2px 0; }}
+         .sr-card {{ background: {card}; border: 1px solid {border}; border-radius: 12px; padding: 12px 14px; }}
+         .sr-clear {{ color: {muted}; }}
+         .sr-todo {{ border-left: 3px solid {grey}; border-radius: 0 6px 6px 0; padding: 6px 10px; font-weight: 600; }}
+         window.sr button {{ background-image: none; box-shadow: none; text-shadow: none; -gtk-icon-shadow: none; }}
+         button.sr-btn, dropdown.sr-btn > button {{ background-color: {raised}; color: {text}; border: 1px solid {border};
+            border-radius: 8px; padding: 4px 12px; min-height: 24px; }}
+         button.sr-btn:hover, dropdown.sr-btn > button:hover {{ background-color: {hover}; }}
+         button.sr-btn:disabled {{ color: {grey}; }}
+         button.sr-quiet {{ background-color: transparent; color: {muted}; }}
+         button.sr-quiet:hover {{ color: {text}; }}
+         button.sr-tab {{ background-color: transparent; color: {muted}; border: 1px solid transparent; border-radius: 8px;
+            padding: 5px 10px; min-height: 0; }}
+         button.sr-tab:hover {{ background-color: {raised}; color: {text}; }}
+         button.sr-tab.current {{ background-color: {raised}; border-color: {border}; color: {text}; font-weight: 600; }}
+         button.sr-name {{ background-color: transparent; border: none; padding: 0 2px; min-height: 0; color: {text};
+            font-size: 1.12em; font-weight: normal; }}
+         button.sr-name:hover label {{ text-decoration-line: underline; }}
+         button.sr-icon {{ background-color: transparent; border: none; border-radius: 6px; padding: 0; min-width: 28px;
+            min-height: 26px; color: {grey}; }}
+         button.sr-icon:hover {{ background-color: {raised}; color: {text}; }}
+         button.sr-icon:disabled {{ opacity: 0.35; }}
+         button.sr-row {{ background-color: transparent; border: none; border-radius: 6px; padding: 4px 8px; min-height: 0;
+            color: {text}; font-weight: normal; }}
+         button.sr-row:hover {{ background-color: {raised}; }}
+         button.sr-row:hover > box > label:nth-child(3) {{ color: {link}; }}
+         .sr-row-plain {{ padding: 4px 8px; }}
+         button.sr-more {{ background-color: transparent; border: none; padding: 2px 8px; min-height: 0; color: {link};
+            font-weight: normal; }}
+         button.sr-more:hover label {{ text-decoration-line: underline; }}
+         entry.sr-entry {{ background-color: {field}; color: {text}; border: 1px solid {border}; border-radius: 8px;
+            box-shadow: none; outline-color: {link}; min-height: 32px; caret-color: {text}; }}
+         entry.sr-entry > text > placeholder {{ color: {grey}; }}
+         window.sr scrollbar {{ background-color: transparent; border: none; }}
+         window.sr *:focus-visible {{ outline-color: {link}; }}",
+        red = colour(Light::Red),
+        orange = colour(Light::Orange),
+        grey = colour(Light::Grey),
+        hover = h(view::mix(palette::TEXT, palette::RAISED, 0.08)),
+    );
+    for l in [Light::Red, Light::Orange, Light::Green, Light::Grey, Light::Blue] {
+        let (c, t) = (colour(l), tone(l));
+        let tint = h(view::mix(view::rgb(l), palette::CARD, 0.16));
+        css += &format!(
+            " .sr-dot.{t} {{ background: {c}; }} .sr-pill.{t}, .sr-vis.{t} {{ color: {c}; background: {tint}; }}
+              .sr-todo.{t} {{ border-left-color: {c}; background: {faint}; }}",
+            faint = h(view::mix(view::rgb(l), palette::CARD, 0.09)),
+        );
+    }
+    css += &format!(
+        " .sr-card.live {{ border-color: {}; }} .sr-card.private {{ border-color: {}; }}",
+        h(view::border(Some(Light::Green))),
+        h(view::border(Some(Light::Blue)))
+    );
+    css
 }
 
 /// `shown` points at the open window's state. Every `/repo` activates the app again; a second
@@ -300,61 +536,190 @@ fn snapshot_if_asked(ui: &Rc<Ui>) {
 fn activate(app: &gtk::Application, shown: &RefCell<Weak<Ui>>) {
     if let Some(open) = app.windows().first() {
         open.present();
-        if let Some(ui) = shown.borrow().upgrade()
-            && !ui.checks.borrow().busy()
-        {
-            ui.checks.borrow_mut().clear();
-            render(&ui);
+        if let Some(ui) = shown.borrow().upgrade() {
+            ui.refresh();
         }
         return;
     }
-    // link buttons as tight as text lines; a theme button is ~2 lines tall
-    let css = gtk::CssProvider::new();
-    css.load_from_string(
-        "button.slink { padding: 0 4px; min-height: 0; border: none; box-shadow: none; background: none; } \
-         button.slink:hover label { text-decoration-line: underline; } \
-         frame.live { border: 2px solid #57ab5a; } frame.private { border: 2px solid #539bf5; }",
-    );
+    let provider = gtk::CssProvider::new();
+    provider.load_from_string(&css());
     if let Some(display) = gdk::Display::default() {
-        gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+        gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
     }
+    // popovers, the dropdown list and the "Remove the tab?" dialog come from the theme: ask for
+    // its dark side so they fit the window
+    if let Some(settings) = gtk::Settings::default() {
+        settings.set_gtk_application_prefer_dark_theme(true);
+    }
+    let demo = crate::demo::on();
+    let (width, height) = crate::view::snapshot_size().unwrap_or((940, 800));
     let win = gtk::ApplicationWindow::builder()
         .application(app)
-        .title("Repo Status")
+        .title(if demo { "Repo Status (demo)" } else { "Repo Status" })
         .icon_name(crate::APP_ID)
-        .default_width(900)
-        .default_height(760)
+        .default_width(width)
+        .default_height(height)
+        .css_classes(["sr"])
         .build();
-    let header = gtk::HeaderBar::new();
-    let refresh = gtk::Button::with_label("Refresh");
-    header.pack_start(&refresh);
-    let new_tab = gtk::Entry::builder().placeholder_text("Tab name").build();
-    let new_tab_btn =
-        gtk::MenuButton::builder().label("New tab").popover(&gtk::Popover::builder().child(&new_tab).build()).build();
-    header.pack_end(&new_tab_btn);
-    win.set_titlebar(Some(&header));
-    let status = gtk::Label::builder().xalign(0.0).margin_start(16).margin_top(8).build();
-    let book = gtk::Notebook::builder().scrollable(true).vexpand(true).build();
-    let outer = gtk::Box::new(gtk::Orientation::Vertical, 6);
-    outer.append(&status);
-    outer.append(&book);
-    win.set_child(Some(&outer));
+
+    // top: the count pills, the "checked 09:30 · …" line, Refresh
+    let pills = hbox(8);
+    let status = gtk::Label::builder()
+        .xalign(1.0)
+        .hexpand(true)
+        .ellipsize(pango::EllipsizeMode::Start)
+        .css_classes(["sr-status"])
+        .build();
+    let refresh = gtk::Button::builder()
+        .label("Refresh")
+        .tooltip_text("Check every repo again (F5 or Ctrl+R)")
+        .css_classes(["sr-btn"])
+        .build();
+    let top = hbox(12);
+    top.add_css_class("sr-top");
+    top.append(&pills);
+    top.append(&status);
+    top.append(&refresh);
+    let error = gtk::Label::builder().xalign(0.0).wrap(true).visible(false).css_classes(["sr-error"]).build();
+    error.set_margin_start(16);
+    error.set_margin_end(16);
+
+    // tabs, then "+ New tab"
+    let tab_strip = hbox(4);
+    let strip_scroll = gtk::ScrolledWindow::builder()
+        .child(&tab_strip)
+        .hexpand(true)
+        .vscrollbar_policy(gtk::PolicyType::Never)
+        .hscrollbar_policy(gtk::PolicyType::External)
+        .build();
+    let new_tab = gtk::Entry::builder().placeholder_text("Tab name, then Enter").build();
+    let new_tab_btn = gtk::MenuButton::builder()
+        .label("+ New tab")
+        .has_frame(false)
+        .popover(&gtk::Popover::builder().child(&new_tab).build())
+        .build();
+    if let Some(b) = new_tab_btn.first_child() {
+        b.add_css_class("sr-btn");
+        b.add_css_class("sr-quiet");
+    }
+    let tabs_row = hbox(6);
+    tabs_row.add_css_class("sr-tabs");
+    tabs_row.append(&strip_scroll);
+    tabs_row.append(&new_tab_btn);
+
+    // the open tab's bar
+    let entry = gtk::Entry::builder().placeholder_text(view::ADD_HINT).hexpand(true).css_classes(["sr-entry"]).build();
+    let add = gtk::Button::builder().label("Add repo").css_classes(["sr-btn"]).build();
+    let sort = gtk::DropDown::from_strings(&view::SORT_LABELS);
+    sort.set_tooltip_text(Some("Order of this tab"));
+    sort.add_css_class("sr-btn");
+    let drop_tab = gtk::Button::builder()
+        .label("Remove tab")
+        .tooltip_text("Take this tab and its repos off the list")
+        .css_classes(["sr-btn", "sr-quiet"])
+        .build();
+    let bar = hbox(8);
+    bar.add_css_class("sr-bar");
+    bar.append(&entry);
+    bar.append(&add);
+    bar.append(&sort);
+    bar.append(&drop_tab);
+    let entry_msg = gtk::Label::builder().xalign(0.0).wrap(true).visible(false).css_classes(["sr-error"]).build();
+    entry_msg.set_margin_start(18);
+    let totals = gtk::Label::builder().xalign(0.0).selectable(true).css_classes(["sr-totals"]).build();
+    let scroll = gtk::ScrolledWindow::builder().vexpand(true).hscrollbar_policy(gtk::PolicyType::Never).build();
+
+    let body = vbox(4);
+    body.add_css_class("sr-body");
+    body.append(&top);
+    if demo {
+        body.append(&text(view::DEMO_NOTE, "sr-demo"));
+    }
+    body.append(&error);
+    body.append(&tabs_row);
+    body.append(&bar);
+    body.append(&entry_msg);
+    body.append(&totals);
+    body.append(&scroll);
+    win.set_child(Some(&body));
 
     let ui = Rc::new(Ui {
         win: win.clone(),
-        book,
+        pills,
         status,
+        error,
         refresh: refresh.clone(),
+        tab_strip,
+        bar,
+        entry: entry.clone(),
+        entry_msg,
+        sort: sort.clone(),
+        totals,
+        scroll,
         checks: RefCell::default(),
+        tabs: RefCell::default(),
+        current: Cell::new(0),
+        unfolded: RefCell::default(),
         building: Cell::new(false),
     });
+
     let w = Rc::downgrade(&ui);
     refresh.connect_clicked(move |_| {
         if let Some(ui) = w.upgrade() {
-            ui.checks.borrow_mut().clear();
-            render(&ui);
+            ui.refresh();
         }
     });
+
+    let on_add = {
+        let w = Rc::downgrade(&ui);
+        move || {
+            let Some(ui) = w.upgrade() else { return };
+            let Some(tab) = ui.tab() else { return };
+            match config::repo_name(&ui.entry.text()) {
+                Some(repo) => {
+                    ui.entry.set_text("");
+                    ui.entry_msg.set_visible(false);
+                    later(&w, move |l| config::add_repo(l, &repo, &tab.name));
+                }
+                None => {
+                    ui.entry_msg.set_text(view::BAD_REPO);
+                    ui.entry_msg.set_visible(true);
+                }
+            }
+        }
+    };
+    let on_add2 = on_add.clone();
+    entry.connect_activate(move |_| on_add());
+    add.connect_clicked(move |_| on_add2());
+
+    let w = Rc::downgrade(&ui);
+    sort.connect_selected_notify(move |d| {
+        let Some(ui) = w.upgrade().filter(|ui| !ui.building.get()) else { return };
+        let Some(tab) = ui.tab() else { return };
+        let s = Sort::ALL[(d.selected() as usize).min(2)];
+        later(&w, move |l| config::set_sort(l, &tab.name, s));
+    });
+
+    let w = Rc::downgrade(&ui);
+    drop_tab.connect_clicked(move |_| {
+        let Some(ui) = w.upgrade() else { return };
+        let Some(tab) = ui.tab() else { return };
+        let (question, detail) = view::remove_tab_question(&tab.name, tab.repos.len());
+        let ask = gtk::AlertDialog::builder()
+            .message(question)
+            .detail(detail)
+            .buttons(["Cancel", "Remove"])
+            .cancel_button(0)
+            .default_button(0)
+            .build();
+        let w = w.clone();
+        ask.choose(Some(&ui.win), gio::Cancellable::NONE, move |res| {
+            if res == Ok(1) {
+                later(&w, move |l| config::remove_tab(l, &tab.name));
+            }
+        });
+    });
+
     let w = Rc::downgrade(&ui);
     new_tab.connect_activate(move |e| {
         let (Some(ui), Some(name)) = (w.upgrade(), config::tab_name(&e.text())) else { return };
@@ -365,20 +730,56 @@ fn activate(app: &gtk::Application, shown: &RefCell<Weak<Ui>>) {
             show_error(&ui, &view::edit_failed(&e));
             return;
         }
-        render(&ui);
         if let Some(i) = config::load_tabs().unwrap_or_default().iter().position(|t| t.name == name) {
-            ui.book.set_current_page(Some(i as u32));
+            ui.current.set(i);
+            ui.scroll.vadjustment().set_value(0.0);
         }
+        render(&ui);
     });
+
+    // keys: F5 / Ctrl+R refresh, Ctrl+L the add field, Ctrl+PageUp/PageDown the tabs, Ctrl+W close
+    let keys = gtk::ShortcutController::new();
+    keys.set_scope(gtk::ShortcutScope::Global);
+    type Key = Box<dyn Fn(&Rc<Ui>)>;
+    let key = |trigger: &str, run: Key| {
+        let w = Rc::downgrade(&ui);
+        let action = gtk::CallbackAction::new(move |_, _| {
+            if let Some(ui) = w.upgrade() {
+                run(&ui);
+            }
+            glib::Propagation::Stop
+        });
+        keys.add_shortcut(gtk::Shortcut::new(gtk::ShortcutTrigger::parse_string(trigger), Some(action)));
+    };
+    key("F5|<Control>r", Box::new(|ui| ui.refresh()));
+    key(
+        "<Control>l",
+        Box::new(|ui| {
+            ui.entry.grab_focus();
+        }),
+    );
+    key("<Control>Page_Down", Box::new(|ui| ui.show_tab(ui.current.get() + 1)));
+    key("<Control>Page_Up", Box::new(|ui| ui.show_tab(ui.current.get().saturating_sub(1))));
+    key("<Control>w", Box::new(|ui| ui.win.close()));
+    win.add_controller(keys);
+
     *shown.borrow_mut() = Rc::downgrade(&ui);
+    // SLASHREPO_SNAPSHOT_TAB=1: the picture shows the second tab
+    if let Some(i) = std::env::var("SLASHREPO_SNAPSHOT_TAB").ok().and_then(|t| t.parse().ok()) {
+        ui.current.set(i);
+    }
     render(&ui);
     // the window owns the state from here; it lives as long as the window
     win.connect_destroy(move |_| drop(ui.clone()));
     win.present();
+    // no field has the keyboard at the start: nothing glows until you click or press Ctrl+L
+    gtk::prelude::GtkWindowExt::set_focus(&win, None::<&gtk::Widget>);
 }
 
 pub fn run() -> ExitCode {
-    let app = gtk::Application::builder().application_id(crate::APP_ID).build();
+    // the demo is its own application: it never takes over (or is taken over by) the real window
+    let id = if crate::demo::on() { format!("{}.Demo", crate::APP_ID) } else { crate::APP_ID.to_string() };
+    let app = gtk::Application::builder().application_id(id).build();
     let shown = RefCell::new(Weak::new());
     app.connect_activate(move |app| activate(app, &shown));
     let code = app.run_with_args::<&str>(&[]);
