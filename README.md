@@ -1,51 +1,80 @@
-# slashRepo
+<p align="center">
+  <img src="docs/banner.png" width="860" alt="slashRepo: your repos, one glance, zero tokens">
+</p>
 
-**Your repos. One glance. Zero tokens.**
+**Type `/repo` in your coding agent. A window shows where every one of your repos stands.
+The model reads none of it, so the report costs no tokens.**
 
-![The flow: /repo, a hook, repo-status, a window, and 0 tokens for the info](docs/flow.svg)
+<p align="center">
+  <img src="docs/window.png" width="860" alt="The Repo Status window with four made-up repos: one clear, one with a pull request to merge, one with failing CI, one private">
+</p>
 
-You already have a coding AI open. You already have repos to keep an eye on. Right now, checking
-them means asking the AI to read API responses and parrot them back — burning tokens on information
-you could have read yourself, if only someone put it in front of you.
+You already have a coding AI open, and repos to keep an eye on. Asking the AI to check them means it
+calls `gh`, reads JSON and writes you a summary: tokens spent on something you could have read yourself.
+slashRepo puts it in front of you instead: the latest release, CI, open PRs and issues, security
+alerts and a short to-do for every repo, checked again each time you open it.
 
-slashRepo does exactly that. Type `/repo`. A window appears:
+## Contents
 
-![The Repo Status window, with three example repos: green, orange and red](docs/window.svg)
+- [How it works](#how-it-works)
+- [How to read a card](#how-to-read-a-card)
+- [Try it first](#try-it-first)
+- [Install](#install)
+- [Works with every major coding agent](#works-with-every-major-coding-agent)
+- [Tabs](#tabs)
+- [On Windows](#on-windows)
+- [Keys](#keys)
+- Details: [private repos and other hosts](#private-repos-and-other-hosts) ·
+  [agents in a sandbox](#agents-in-a-sandbox) · [limits](#limits) ·
+  [what install touches](#what-install-touches) · [why it is built this way](#why-it-is-built-this-way) ·
+  [the fine print](#the-fine-print)
 
-Every repo gets a colored dot: 🟢 all clear, 🟠 something needs you, 🔴 CI is broken or there is a
-security alert. Latest release and the commits since it, open PRs, issues, CI status, GitHub's
-Dependabot alerts, and a short to-do — all in one place, refreshed every time you open it.
-The card's border shows who can see the repo: green and "live" when it is public, red and
-"private" when it is not.
+## How it works
 
-**The AI never sees any of it.** A hook opens the window the moment you hit Enter. The prompt is blocked
-before it reaches the model. No turn, no reply, no tokens. The repo info is free and always will be.
-(That is Claude Code. opencode, Gemini CLI, Codex and Antigravity have no way to block a prompt, so their
-`/repo` still costs one short model turn; the repo info itself still costs nothing.)
+<p align="center">
+  <img src="docs/flow.png" width="860" alt="How it works: you type /repo, a hook catches it and opens the window, you read the window; 0 tokens">
+</p>
 
-## Now on Windows too
+A hook opens the window the moment you press Enter and stops the prompt before it reaches the model:
+no turn, no reply, no tokens.
 
-**v0.6.0** brings slashRepo to Windows 10/11: one self-contained `.exe`, nothing else to install.
-Same window, same tabs, same `/repo`, same zero tokens.
-
-![The Repo Status window on Windows, checking GitHub, GitLab and Codeberg repos](docs/window-windows.png)
-
-*The real thing: the exe took this picture of itself on a GitHub Windows runner (no GPU needed).*
-
-Grab `repo-status-x86_64-windows.exe` from the [latest release](https://github.com/LudaLunizz/slashRepo/releases/latest),
-double-click it, done. Run it once with `install` to get the Start Menu entry and `/repo` in your agents
-([details](#30-second-install)).
-
-## Why you want this
+That is Claude Code. opencode, Gemini CLI, Codex and Antigravity have no way to stop a prompt, so their
+`/repo` still costs one short model turn. The repo info itself costs nothing in any of them.
 
 | Without slashRepo | With slashRepo |
 |---|---|
-| "Check my repos" ➜ the AI calls `gh`, reads JSON, writes a summary, you read the summary | `/repo` ➜ a window with everything, right now |
+| "Check my repos": the AI calls `gh`, reads JSON, writes a summary, you read the summary | `/repo`: a window with everything, right now |
 | Tokens spent on every check | 0 tokens, every time |
-| One repo at a time, or a wall of text | All repos at a glance, tabbed and color-coded |
-| Stale the moment it's printed | Live — open it again whenever you want |
+| One repo at a time, or a wall of text | All repos at a glance, in tabs, colour-coded |
+| Stale the moment it is printed | Press Refresh whenever you want |
 
-## 30-second install
+## How to read a card
+
+<p align="center">
+  <img src="docs/card.png" width="860" alt="A card explained: status dot, facts, pull requests, issues, to-do, and the live or private mark">
+</p>
+
+The pills at the top of the window count the dots over all your tabs: how many repos **need a fix**
+(red), have something **to do** (orange) or are **clear** (green).
+
+| Dot | Means |
+|---|---|
+| 🟢 green | Nothing asks for you |
+| 🟠 orange | Something to do: a PR to review, commits waiting for a release, issues to triage |
+| 🔴 red | Fix first: CI is failing on the default branch, there is a security alert, or the check itself failed |
+
+Every name, pull request and issue opens in your browser with a click.
+
+## Try it first
+
+```sh
+repo-status --demo
+```
+
+opens the window with the made-up repos from the pictures above. It reads no forge and never touches
+your repo list, so you can click around freely.
+
+## Install
 
 **Linux:** GTK 4.12+ and `gh` logged in. That's it.
 
@@ -54,7 +83,7 @@ git clone https://github.com/LudaLunizz/slashRepo
 cd slashRepo && ./install.sh
 ```
 
-**Windows 10/11 (x86_64):** `gh` logged in. Nothing else — one `.exe`, no runtime to install.
+**Windows 10/11 (x86_64):** `gh` logged in. Nothing else: one `.exe`, no runtime to install.
 
 ```powershell
 git clone https://github.com/LudaLunizz/slashRepo
@@ -66,13 +95,13 @@ Or skip the clone: download `repo-status-x86_64-windows.exe` from the
 window, or run `repo-status-x86_64-windows.exe install` once to set up `/repo` and the Start Menu entry.
 
 Has Rust? It builds from source. No Rust? It downloads the prebuilt binary and verifies the checksum.
-Then it hooks into every agent it finds — done.
+Then it hooks into every agent it finds.
 
 ## Works with every major coding agent
 
 | Agent | Command | Tokens for the report |
 |---|---|---|
-| **Claude Code** | `/repo` or "repo check" | **0** — prompt never reaches the model |
+| **Claude Code** | `/repo` or "repo check" | **0**: the prompt never reaches the model |
 | **opencode** | `/repo` | **0** (a few for the one-line reply) |
 | **Gemini CLI** | `/repo` | **0** (a few for the one-line reply) |
 | **Codex** | `$repo` | **0** (a few for one command) |
@@ -83,10 +112,18 @@ drop the prompt before the model sees it, so only there nothing at all is spent;
 short turn to run the command. Runs in a sandbox too: see [Agents in a sandbox](#agents-in-a-sandbox).
 Which agents have actually been run is under [Limits](#limits).
 
-## Tabs: your repos, your way
+## Tabs
 
-Group repos into tabs. Move them with the ▲▼ buttons. Sort by stars or forks. Mix GitHub, GitLab and
-Codeberg in the same view; [private repos and other hosts](#private-repos-and-other-hosts) need a token.
+<p align="center">
+  <img src="docs/window-tabs.png" width="860" alt="A second tab, sorted by stars, with repos from GitHub, GitLab and Codeberg; long lists fold behind Show more">
+</p>
+
+Group repos into tabs; each tab shows its worst dot and its repo count. Move repos with the ▲▼ buttons,
+or let a tab sort itself by stars or forks. Mix GitHub, GitLab and Codeberg in the same view
+([private repos and other hosts](#private-repos-and-other-hosts) need a token). A repo with many PRs or
+issues shows the first three; the rest folds behind "Show more".
+
+The window edits a plain text file, and so can you:
 
 ```ini
 [Mine]
@@ -100,17 +137,29 @@ codeberg.org/forgejo/forgejo
 tokio-rs/tokio
 ```
 
-No config file yet? It starts with your 20 newest non-fork repos. Change something and it saves.
-The file is `~/.config/slashrepo/repos`, or `$XDG_CONFIG_HOME/slashrepo/repos` when that is set (Windows: `%APPDATA%\slashRepo\repos`).
+No file yet? It starts with your 20 newest non-fork repos, and saves once you change something.
+The file is `~/.config/slashrepo/repos`, or `$XDG_CONFIG_HOME/slashrepo/repos` when that is set
+(Windows: `%APPDATA%\slashRepo\repos`).
 
-## What you get per repo
+## On Windows
 
-- Latest release and how many commits since it
-- CI status on the default branch
-- Open PRs (or MRs on GitLab) and issues (up to 30 of each are listed)
-- Dependabot / security alerts (GitHub only)
-- A to-do line so you know what to do next
-- Click any line to open it in your browser
+One self-contained `.exe` for Windows 10/11, nothing else to install. Same window, same tabs, same
+`/repo`, same zero tokens.
+
+<p align="center">
+  <img src="docs/window-windows.png" width="860" alt="The Repo Status window on Windows, with the same made-up repos">
+</p>
+
+*The real thing: the exe took this picture of itself on a GitHub Windows runner (no GPU needed).*
+
+## Keys
+
+| Key | Does |
+|---|---|
+| `F5` or `Ctrl+R` | Check every repo again |
+| `Ctrl+L` | Go to the "Add a repo" field |
+| `Ctrl+PageDown` / `Ctrl+PageUp` | Next / previous tab |
+| `Ctrl+W` | Close the window |
 
 ## Private repos and other hosts
 
@@ -213,4 +262,4 @@ With `--trigger`: two units in `~/.config/systemd/user/` and the trigger file. O
 
 ---
 
-**One keystroke. Every repo. No tokens.** [Install it.](#30-second-install)
+**One keystroke. Every repo. No tokens.** [Install it.](#install)
