@@ -83,10 +83,15 @@ fn entries(lines: &[String]) -> Vec<Entry> {
     out
 }
 
-/// The tabs in file order, duplicates (case-insensitive) dropped.
+/// The tabs in file order, duplicate repos (case-insensitive) dropped. A repo written with other
+/// capitals in a later tab takes the first spelling, so it is checked and counted once.
 pub fn parse(lines: &[String]) -> Vec<Tab> {
     let mut tabs: Vec<Tab> = Vec::new();
-    for e in entries(lines) {
+    let mut spelling: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for mut e in entries(lines) {
+        if e.kind == Kind::Repo {
+            e.value = spelling.entry(e.value.to_ascii_lowercase()).or_insert_with(|| e.value.clone()).clone();
+        }
         if e.kind == Kind::Blank {
             continue;
         }
@@ -228,9 +233,7 @@ pub fn path() -> PathBuf {
         let appdata = std::env::var_os("APPDATA").filter(|v| !v.is_empty());
         return appdata.map_or_else(|| crate::home().join("AppData/Roaming"), PathBuf::from).join("slashRepo/repos");
     }
-    // XDG_CONFIG_HOME when it is an absolute path (the spec says to ignore a relative one)
-    let base = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).filter(|p| p.is_absolute());
-    base.unwrap_or_else(|| crate::home().join(".config")).join("slashrepo/repos")
+    config_home(&crate::home()).join("slashrepo/repos")
 }
 
 /// The file's lines; `Ok(None)` only when there is no file. Any other failure (no permission,
@@ -252,15 +255,35 @@ pub fn read_lines() -> std::io::Result<Option<Vec<String>>> {
 }
 
 /// Your own non-fork, non-archived repos (newest 20): the list when there is no config file.
+/// A hung `gh` gets the same 60 seconds as the checks (an edit holds the lock meanwhile), and a
+/// failed one (not logged in) gives no list rather than whatever it printed.
 pub fn own_repos() -> Vec<String> {
-    let out = crate::command("gh")
-        .args(["repo", "list", "--source", "--no-archived", "--limit", "20"])
-        .args(["--json", "nameWithOwner", "--jq", ".[].nameWithOwner"])
-        .output();
-    match out {
-        Ok(o) => String::from_utf8_lossy(&o.stdout).split_whitespace().map(String::from).collect(),
-        Err(_) => Vec::new(),
+    let mut cmd = crate::command("gh");
+    cmd.args(["repo", "list", "--source", "--no-archived", "--limit", "20"]).args([
+        "--json",
+        "nameWithOwner",
+        "--jq",
+        ".[].nameWithOwner",
+    ]);
+    match crate::output_within(cmd, std::time::Duration::from_secs(60)) {
+        Ok(o) if o.status.success() => own_repo_lines(&String::from_utf8_lossy(&o.stdout)),
+        _ => Vec::new(),
     }
+}
+
+/// gh's lines, each one only if it is a repo name.
+fn own_repo_lines(out: &str) -> Vec<String> {
+    out.split_whitespace().filter_map(repo_name).collect()
+}
+
+/// $XDG_CONFIG_HOME when it is an absolute path (the spec says to ignore a relative one), else
+/// ~/.config. Unix only; the repos file and the systemd units both live under it.
+pub fn config_home(home: &Path) -> PathBuf {
+    config_home_from(std::env::var_os("XDG_CONFIG_HOME"), home)
+}
+
+fn config_home_from(xdg: Option<std::ffi::OsString>, home: &Path) -> PathBuf {
+    xdg.map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| home.join(".config"))
 }
 
 pub fn load_tabs() -> Result<Vec<Tab>, String> {
@@ -362,6 +385,25 @@ mod tests {
         assert_eq!(tab(&t, DEFAULT_TAB).repos, v(&["me/a", "me/b"]));
         assert_eq!(tab(&t, "ArtCraft").repos, v(&["st/x", "st/y"]));
         assert_eq!(tab(&t, "ArtCraft").sort, Sort::Stars);
+        // one repo, two spellings in two tabs: one name, so one check
+        let t = parse(&v(&["Me/App\n", "[B]\n", "me/app\n", "me/other\n"]));
+        assert_eq!(tab(&t, "B").repos, v(&["Me/App", "me/other"]));
+        assert_eq!(all_repos(&t), v(&["Me/App", "me/other"]));
+    }
+
+    #[test]
+    fn own_repo_lines_keep_only_repo_names() {
+        assert_eq!(own_repo_lines("me/a\nme/b\n"), v(&["me/a", "me/b"]));
+        assert_eq!(own_repo_lines("To get started run: gh auth login"), Vec::<String>::new());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn config_home_ignores_a_relative_xdg_config_home() {
+        let h = Path::new("/h");
+        assert_eq!(config_home_from(Some("rel/cfg".into()), h), Path::new("/h/.config"));
+        assert_eq!(config_home_from(Some("/x/cfg".into()), h), Path::new("/x/cfg"));
+        assert_eq!(config_home_from(None, h), Path::new("/h/.config"));
     }
 
     #[test]

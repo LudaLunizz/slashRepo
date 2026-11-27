@@ -104,6 +104,22 @@ fn flags_edit_the_real_file() {
     assert_eq!(read(&cfg), "\n");
 }
 
+#[test]
+fn text_mode_with_a_tab_that_is_not_there_is_wrong_usage() {
+    let h = TempHome::new("text-tab");
+    let cfg = h.path(CONFIG);
+    std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+    std::fs::write(&cfg, "[Empty]\n[Other]\n").unwrap();
+    let out = h.run(&["--text", "Typo"], None, &[]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("the tabs are: Empty, Other"), "{out:?}");
+    assert!(out.stdout.is_empty());
+    // a tab that is there (even an empty one) still prints its report
+    let out = h.run(&["--text", "Empty"], None, &[]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stdout).contains("##### Empty"));
+}
+
 #[cfg(unix)]
 #[test]
 fn the_repos_file_follows_xdg_config_home() {
@@ -473,6 +489,9 @@ fn uninstall_undoes_install_and_keeps_what_is_not_ours() {
     ] {
         assert!(!h.path(f).exists(), "still there: {f}");
     }
+    // the skill's own folder goes with it, the skills folder (maybe holding others) stays
+    assert!(!h.path(".agents/skills/repo").exists());
+    assert!(h.path(".agents/skills").is_dir());
     #[cfg(unix)]
     for f in [
         ".local/share/applications/io.github.ludalunizz.SlashRepo.desktop",

@@ -24,7 +24,7 @@ pub fn bin_path(h: &Path) -> PathBuf {
 
 /// Where the systemd units of `--trigger` go (Linux).
 pub fn units_dir(h: &Path) -> PathBuf {
-    std::env::var_os("XDG_CONFIG_HOME").map_or_else(|| h.join(".config"), PathBuf::from).join("systemd/user")
+    crate::config::config_home(h).join("systemd/user")
 }
 
 /// The Start Menu entry (Windows).

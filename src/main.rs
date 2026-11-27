@@ -257,7 +257,14 @@ fn main() -> ExitCode {
         }
         ["--text", rest @ ..] if rest.len() <= 1 => match config::load_tabs() {
             Ok(tabs) => {
-                print!("{}", report::text_mode(&tabs, rest.first().copied()));
+                let only = rest.first().map(|t| t.trim());
+                if let Some(o) = only
+                    && !tabs.iter().any(|t| t.name == o)
+                {
+                    let names: Vec<&str> = tabs.iter().map(|t| t.name.as_str()).collect();
+                    return misuse(&format!("no tab \"{o}\"; the tabs are: {}", names.join(", ")));
+                }
+                print!("{}", report::text_mode(&tabs, only));
                 ExitCode::SUCCESS
             }
             Err(e) => fail(&e),

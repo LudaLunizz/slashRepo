@@ -27,6 +27,13 @@ fn file_step(path: &Path) -> Step {
     match std::fs::read_to_string(path) {
         Ok(t) if is_ours(&t) => {
             std::fs::remove_file(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            // a skill is a folder of its own (skills/repo/SKILL.md): an empty one would still be
+            // listed. remove_dir only takes an empty folder, so anything else in it stays.
+            if path.file_name().is_some_and(|n| n == "SKILL.md")
+                && let Some(dir) = path.parent().filter(|d| d.file_name().is_some_and(|n| n == "repo"))
+            {
+                let _ = std::fs::remove_dir(dir);
+            }
             Ok(Some(format!("removed {}", path.display())))
         }
         Ok(_) => Ok(Some(format!("kept {} (not ours)", path.display()))),
