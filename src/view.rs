@@ -347,6 +347,7 @@ impl Checks {
     /// Refresh: forget every card (the next start() checks them all again).
     pub fn clear(&mut self) {
         self.cards.clear();
+        config::forget_own_repos();
     }
 
     pub fn busy(&self) -> bool {

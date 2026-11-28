@@ -120,8 +120,13 @@ fn contains(repos: &[String], repo: &str) -> bool {
     repos.iter().any(|r| r.eq_ignore_ascii_case(repo))
 }
 
-static SCHEME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^https?://").unwrap());
-static GITHUB_HOST: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(www\.)?github\.com/").unwrap());
+static SCHEME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(https?|ssh|git)://").unwrap());
+/// a clone address in scp form: git@github.com:owner/name.git
+static SCP: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[A-Za-z0-9._-]+@([A-Za-z0-9.-]+\.[A-Za-z]+):([^/].*)$").unwrap());
+/// user@ and :port in front of the path (ssh://git@host:2222/...)
+static USER_PORT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^([^/@]*@)?([^/:]+)(:[0-9]+)?").unwrap());
+static GITHUB_HOST: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(www\.)?github\.com/").unwrap());
 static GITHUB: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z0-9-]+/[A-Za-z0-9_.-]+$").unwrap());
 static CODEBERG_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^codeberg\.org/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$").unwrap());
@@ -129,23 +134,65 @@ static GITLAB: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[a-z0-9-]+(\.[a-z0-9-]+)+(/[A-Za-z0-9_.-]+){2,}$").unwrap());
 static TAB_NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[^\[\]#\n]+$").unwrap());
 
-/// owner/name for GitHub (name or link); codeberg.org/owner/repo; host/group/project for GitLab
-/// (gitlab.com/... or a link). None if it is none of these.
+/// The pages of a Codeberg repo (codeberg.org/owner/repo/PAGE/...): a link to one is the repo.
+const CODEBERG_PAGES: [&str; 16] = [
+    "src",
+    "issues",
+    "pulls",
+    "releases",
+    "tags",
+    "branches",
+    "commits",
+    "commit",
+    "compare",
+    "wiki",
+    "actions",
+    "activity",
+    "milestones",
+    "labels",
+    "projects",
+    "settings",
+];
+
+/// owner/name for GitHub (name, link or clone address); codeberg.org/owner/repo;
+/// host/group/project for GitLab (gitlab.com/... or a link). A link to a page of the repo (an
+/// issue, a branch) is the repo; hosts are written in lower case. None if it is none of these.
 pub fn repo_name(text: &str) -> Option<String> {
-    let t = SCHEME.replace(text.trim(), "");
+    let t = text.trim();
+    let t = match SCP.captures(t) {
+        Some(c) if !t.contains("://") => format!("{}/{}", &c[1], &c[2]),
+        _ => SCHEME.replace(t, "").into_owned(),
+    };
+    // a page's ?query or #anchor is not part of the repo
+    let t = t.split(['?', '#']).next().unwrap_or("");
+    let t = USER_PORT.replace(t, "$2").into_owned();
+    // the host (the first part, when it has a dot) in lower case: GitHub.com is github.com
+    let t = match t.split_once('/') {
+        Some((first, rest)) if first.contains('.') => format!("{}/{rest}", first.to_ascii_lowercase()),
+        _ => t,
+    };
     let t = t.trim_end_matches('/');
+    let t = t.split("/-/").next().unwrap_or(t); // a GitLab page: gitlab.com/g/p/-/issues/3
     let t = t.strip_suffix(".git").unwrap_or(t);
-    let t = GITHUB_HOST.replace(t, "").into_owned();
-    if GITHUB.is_match(&t) {
-        return Some(t);
+    if let Some(m) = GITHUB_HOST.find(t) {
+        // GitHub has no subgroups: whatever follows owner/name is a page of the repo
+        let rest: Vec<&str> = t[m.end()..].splitn(3, '/').take(2).collect();
+        let t = rest.join("/");
+        let t = t.strip_suffix(".git").unwrap_or(&t);
+        return GITHUB.is_match(t).then(|| t.to_string());
     }
-    if t.starts_with(&format!("{CODEBERG}/")) {
+    if GITHUB.is_match(t) {
+        return Some(t.to_string());
+    }
+    if let Some(path) = t.strip_prefix(&format!("{CODEBERG}/")) {
+        let parts: Vec<&str> = path.split('/').collect();
+        let t = match parts.get(2) {
+            Some(page) if CODEBERG_PAGES.contains(page) => format!("{CODEBERG}/{}/{}", parts[0], parts[1]),
+            _ => t.to_string(),
+        };
         return CODEBERG_RE.is_match(&t).then_some(t);
     }
-    if GITLAB.is_match(&t) && !format!("{t}/").contains("/-/") {
-        return Some(t);
-    }
-    None
+    GITLAB.is_match(t).then(|| t.to_string())
 }
 
 pub fn tab_name(text: &str) -> Option<String> {
@@ -241,7 +288,8 @@ pub fn path() -> PathBuf {
 /// missing one and writes over it.
 fn read_lines_at(p: &Path) -> std::io::Result<Option<Vec<String>>> {
     match std::fs::read_to_string(p) {
-        Ok(text) => Ok(Some(text.lines().map(|l| format!("{l}\n")).collect())),
+        // a byte order mark (Windows Notepad) is not part of the first line
+        Ok(text) => Ok(Some(text.trim_start_matches('\u{feff}').lines().map(|l| format!("{l}\n")).collect())),
         Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e),
     }
@@ -254,10 +302,28 @@ pub fn read_lines() -> std::io::Result<Option<Vec<String>>> {
     read_lines_at(&path())
 }
 
+/// The answer of `gh repo list`, asked once per run: the window reads the list on every redraw
+/// (on its main thread), so without this each tab switch would wait for `gh` again.
+static OWN_REPOS: std::sync::Mutex<Option<Vec<String>>> = std::sync::Mutex::new(None);
+
 /// Your own non-fork, non-archived repos (newest 20): the list when there is no config file.
+/// Asked once and kept (see [`forget_own_repos`]).
+pub fn own_repos() -> Vec<String> {
+    kept_or(&OWN_REPOS, ask_own_repos)
+}
+
+fn kept_or(kept: &std::sync::Mutex<Option<Vec<String>>>, ask: impl FnOnce() -> Vec<String>) -> Vec<String> {
+    kept.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_or_insert_with(ask).clone()
+}
+
+/// Refresh: the next own_repos() asks `gh` again (you may have logged in meanwhile).
+pub fn forget_own_repos() {
+    *OWN_REPOS.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+}
+
 /// A hung `gh` gets the same 60 seconds as the checks (an edit holds the lock meanwhile), and a
 /// failed one (not logged in) gives no list rather than whatever it printed.
-pub fn own_repos() -> Vec<String> {
+fn ask_own_repos() -> Vec<String> {
     let mut cmd = crate::command("gh");
     cmd.args(["repo", "list", "--source", "--no-archived", "--limit", "20"]).args([
         "--json",
@@ -321,8 +387,11 @@ pub fn edit(change: impl FnOnce(&[String]) -> Vec<String>) -> std::io::Result<()
         Ok(None) => own_repos().into_iter().map(|r| format!("{r}\n")).collect(),
         Err(e) => return Err(Error::new(e.kind(), format!("could not read it, left untouched ({e})"))),
     };
-    let lines = change(&lines);
-    crate::write_atomic_keep(&path(), lines.concat().as_bytes(), 0o644)
+    let new = change(&lines);
+    if new == lines && path().exists() {
+        return Ok(()); // nothing changed: the file (and its time stamp) stays as it is
+    }
+    crate::write_atomic_keep(&path(), new.concat().as_bytes(), 0o644)
 }
 
 /// Every repo of every tab once, in file order.
@@ -373,6 +442,12 @@ mod tests {
         assert!(read_lines_at(&latin).is_err());
         // so is anything else that cannot be read as a file
         assert!(read_lines_at(&dir).is_err());
+        // a BOM in front of the first line is not part of it
+        let bom = dir.join("bom");
+        std::fs::write(&bom, "\u{feff}[Work]\r\nme/a\r\n").unwrap();
+        let lines = read_lines_at(&bom).unwrap().unwrap();
+        assert_eq!(lines, v(&["[Work]\n", "me/a\n"]));
+        assert_eq!(parse(&lines)[0].name, "Work");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -389,6 +464,22 @@ mod tests {
         let t = parse(&v(&["Me/App\n", "[B]\n", "me/app\n", "me/other\n"]));
         assert_eq!(tab(&t, "B").repos, v(&["Me/App", "me/other"]));
         assert_eq!(all_repos(&t), v(&["Me/App", "me/other"]));
+    }
+
+    #[test]
+    fn gh_is_asked_once_until_forgotten() {
+        let kept = std::sync::Mutex::new(None);
+        let asked = std::cell::Cell::new(0);
+        let ask = || {
+            asked.set(asked.get() + 1);
+            v(&["me/a"])
+        };
+        assert_eq!(kept_or(&kept, ask), v(&["me/a"]));
+        assert_eq!(kept_or(&kept, ask), v(&["me/a"]));
+        assert_eq!(asked.get(), 1, "a redraw must not run gh again");
+        *kept.lock().unwrap() = None; // what forget_own_repos() does to the real one
+        kept_or(&kept, ask);
+        assert_eq!(asked.get(), 2);
     }
 
     #[test]
@@ -462,9 +553,35 @@ mod tests {
         assert_eq!(repo_name("https://git.example.org/team/app/").unwrap(), "git.example.org/team/app");
         assert_eq!(repo_name("https://codeberg.org/forgejo/forgejo.git").unwrap(), "codeberg.org/forgejo/forgejo");
         assert_eq!(repo_name("codeberg.org/a/b/c"), None); // Codeberg has no subgroups
-        for bad in ["gitlab.com/onlygroup", "https://gitlab.com/a/b/-/issues", "gitlab.com/a b/c"] {
+        for bad in ["gitlab.com/onlygroup", "https://gitlab.com/-/issues", "gitlab.com/a b/c", "codeberg.org/a"] {
             assert_eq!(repo_name(bad), None, "{bad}");
         }
+        // capitals in the scheme or host: still the same repo, host in lower case
+        for (text, want) in [
+            ("HTTPS://github.com/o/r", "o/r"),
+            ("https://GitHub.com/Me/App", "Me/App"),
+            ("Codeberg.org/o/r", "codeberg.org/o/r"),
+            ("https://GitLab.com/Group/Project", "gitlab.com/Group/Project"),
+        ] {
+            assert_eq!(repo_name(text).as_deref(), Some(want), "{text}");
+        }
+        // a link to a page of the repo, and clone addresses
+        for (text, want) in [
+            ("https://github.com/o/r/issues/3", "o/r"),
+            ("https://github.com/o/r/tree/main/src", "o/r"),
+            ("https://github.com/o/r?tab=readme-ov-file#install", "o/r"),
+            ("https://gitlab.com/g/sub/p/-/merge_requests/1", "gitlab.com/g/sub/p"),
+            ("https://codeberg.org/o/r/src/branch/main", "codeberg.org/o/r"),
+            ("https://codeberg.org/o/r/issues/12", "codeberg.org/o/r"),
+            ("git@github.com:o/r.git", "o/r"),
+            ("ssh://git@github.com/o/r.git", "o/r"),
+            ("git@gitlab.com:g/sub/p.git", "gitlab.com/g/sub/p"),
+            ("ssh://git@codeberg.org:2222/o/r.git", "codeberg.org/o/r"),
+        ] {
+            assert_eq!(repo_name(text).as_deref(), Some(want), "{text}");
+        }
+        // a GitHub link with only an owner is no repo
+        assert_eq!(repo_name("https://github.com/o"), None);
         assert_eq!(tab_name("  ArtCraft ").unwrap(), "ArtCraft");
         assert_eq!(tab_name("a]b"), None);
         assert_eq!(tab_name(""), None);

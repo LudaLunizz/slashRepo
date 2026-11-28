@@ -105,6 +105,30 @@ fn flags_edit_the_real_file() {
 }
 
 #[test]
+fn removing_what_is_not_there_says_so() {
+    let h = TempHome::new("remove-typo");
+    let cfg = h.path(CONFIG);
+    std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+    let text = "me/a # mine\n[Work]\nst/x\n";
+    std::fs::write(&cfg, text).unwrap();
+    let err = |o: &Output| String::from_utf8_lossy(&o.stderr).into_owned();
+    let out = h.run(&["--remove", "me/typo"], None, &[]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(err(&out).contains("me/typo is not in the list"), "{out:?}");
+    // in the list, but not in that tab
+    let out = h.run(&["--remove", "me/a", "Work"], None, &[]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(err(&out).contains("not in the tab \"Work\""), "{out:?}");
+    let out = h.run(&["--remove-tab", "Wrok"], None, &[]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(err(&out).contains("the tabs are: My repos, Work"), "{out:?}");
+    assert_eq!(read(&cfg), text, "nothing may change");
+    // the real thing still works (any capitals)
+    assert!(h.run(&["--remove", "ST/X", "Work"], None, &[]).status.success());
+    assert_eq!(read(&cfg), "me/a # mine\n[Work]\n");
+}
+
+#[test]
 fn text_mode_with_a_tab_that_is_not_there_is_wrong_usage() {
     let h = TempHome::new("text-tab");
     let cfg = h.path(CONFIG);

@@ -103,13 +103,26 @@ fn trigger(file: &Path, h: &Path) -> Step {
     Ok(format!("writing {f} opens the window (set SLASHREPO_TRIGGER={f} inside the sandbox)"))
 }
 
+/// The program path as a desktop file's `Exec=` value (Desktop Entry spec, "The Exec key"): an
+/// argument with a reserved character goes in double quotes with `"` `` ` `` `$` `\` escaped, `%`
+/// is written `%%` (else it is a field code), and then the string rule doubles every backslash.
 fn desktop_exec(bin: &Path) -> String {
+    const RESERVED: &[char] =
+        &[' ', '\t', '\n', '"', '\'', '\\', '>', '<', '~', '|', '&', ';', '$', '*', '?', '#', '(', ')', '`'];
     let b = bin.to_string_lossy();
-    if b.contains([' ', '"', '\\', '`', '$']) {
-        format!("\"{}\"", b.replace('\\', "\\\\").replace('"', "\\\"").replace('`', "\\`").replace('$', "\\$"))
+    let arg = if b.contains(RESERVED) {
+        let mut q = String::from("\"");
+        for c in b.chars() {
+            if matches!(c, '"' | '`' | '$' | '\\') {
+                q.push('\\');
+            }
+            q.push(c);
+        }
+        q + "\""
     } else {
-        b.into()
-    }
+        b.into_owned()
+    };
+    arg.replace('%', "%%").replace('\\', "\\\\").replace('\n', "\\n").replace('\t', "\\t")
 }
 
 /// Copy this binary to `bin` (temp file + rename, so a running old one keeps working).
@@ -119,14 +132,27 @@ fn copy_self(bin: &Path) -> Res {
         return Ok(());
     }
     let data = std::fs::read(&me).map_err(|e| format!("{}: {e}", me.display()))?;
-    if cfg!(windows) && bin.exists() {
+    swap_in(bin, cfg!(windows), || write_atomic(bin, &data, 0o755))
+}
+
+/// Write the new program over `bin`. With `aside` (Windows) the old one is renamed to .exe.old
+/// first, and renamed back when the write fails, so there is never no program at all.
+fn swap_in(bin: &Path, aside: bool, write: impl FnOnce() -> std::io::Result<()>) -> Res {
+    let mut moved = None;
+    if aside && bin.exists() {
         // Windows can't replace a running exe, but it can rename it: move the old one aside.
         let old = bin.with_extension("exe.old");
         let _ = std::fs::remove_file(&old); // still running from the last update: rename fails below
         std::fs::rename(bin, &old)
             .map_err(|e| format!("{}: {e} (close the Repo Status window first)", bin.display()))?;
+        moved = Some(old);
     }
-    write_atomic(bin, &data, 0o755).map_err(|e| format!("{}: {e}", bin.display()))
+    write().map_err(|e| {
+        // the new one could not be written: the old one goes back, so /repo keeps working
+        let back = moved.as_ref().is_some_and(|old| std::fs::rename(old, bin).is_ok());
+        let kept = if back { " (the old one is back in place)" } else { "" };
+        format!("{}: {e}{kept}", bin.display())
+    })
 }
 
 /// Linux: icon + desktop file named after the app id; GNOME matches the window to it (else a gear).
@@ -221,4 +247,46 @@ pub fn run(trigger_file: Option<&Path>) -> Res {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{desktop_exec, swap_in};
+    use std::path::Path;
+
+    #[test]
+    fn a_failed_update_puts_the_old_program_back() {
+        let dir = std::env::temp_dir().join(format!("slashrepo-swap-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("repo-status.exe");
+        std::fs::write(&bin, "old").unwrap();
+        let e = swap_in(&bin, true, || Err(std::io::Error::other("disk full"))).unwrap_err();
+        assert!(e.contains("disk full") && e.contains("back in place"), "{e}");
+        assert_eq!(std::fs::read_to_string(&bin).unwrap(), "old");
+        assert!(!bin.with_extension("exe.old").exists());
+        // a write that works leaves the old one aside (it may still be running)
+        swap_in(&bin, true, || std::fs::write(&bin, "new")).unwrap();
+        assert_eq!(std::fs::read_to_string(&bin).unwrap(), "new");
+        assert_eq!(std::fs::read_to_string(bin.with_extension("exe.old")).unwrap(), "old");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn desktop_exec_follows_the_spec() {
+        let e = |p: &str| desktop_exec(Path::new(p));
+        assert_eq!(e("/h/.local/bin/repo-status"), "/h/.local/bin/repo-status");
+        assert_eq!(e("/h/a b/x"), "\"/h/a b/x\"");
+        // % is a field code: written twice, quoted or not
+        assert_eq!(e("/h/50%/x"), "/h/50%%/x");
+        assert_eq!(e("/h/50% b/x"), "\"/h/50%% b/x\"");
+        // reserved characters that need quotes although sh-style quoting did not catch them
+        for p in ["/h/it's/x", "/h/a&b/x", "/h/a;b/x", "/h/(x)/y", "/h/a#b/x", "/h/~x/y"] {
+            assert_eq!(e(p), format!("\"{p}\""), "{p}");
+        }
+        // quoting rule first (\" \` \$ \\), then the string rule doubles each backslash
+        assert_eq!(e("/h/a\"b"), r#""/h/a\\"b""#);
+        assert_eq!(e("/h/a$b"), r#""/h/a\\$b""#);
+        assert_eq!(e("/h/a\\b"), r#""/h/a\\\\b""#);
+    }
 }

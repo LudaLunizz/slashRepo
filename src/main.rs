@@ -296,10 +296,40 @@ fn main() -> ExitCode {
                 let tab = tab.unwrap_or_else(|| DEFAULT_TAB.into());
                 edited(config::edit(|l| config::add_repo(l, &repo, &tab)))
             } else {
-                edited(config::edit(|l| config::remove_repo(l, &repo, tab.as_deref())))
+                let mut tabs = None;
+                let r = config::edit(|l| {
+                    let out = config::remove_repo(l, &repo, tab.as_deref());
+                    if out == l {
+                        tabs = Some(config::parse(l));
+                    }
+                    out
+                });
+                match tabs {
+                    // a typo must not look like it worked
+                    Some(_) if r.is_ok() => match &tab {
+                        Some(t) => fail(&format!("{repo} is not in the tab \"{t}\"; nothing removed")),
+                        None => fail(&format!("{repo} is not in the list; nothing removed")),
+                    },
+                    _ => edited(r),
+                }
             }
         }
-        ["--remove-tab", tab] => edited(config::edit(|l| config::remove_tab(l, tab.trim()))),
+        ["--remove-tab", tab] => {
+            let mut names = None;
+            let r = config::edit(|l| {
+                let out = config::remove_tab(l, tab.trim());
+                if out == l {
+                    names = Some(config::parse(l).into_iter().map(|t| t.name).collect::<Vec<_>>());
+                }
+                out
+            });
+            match names {
+                Some(names) if r.is_ok() => {
+                    fail(&format!("no tab \"{}\"; the tabs are: {}", tab.trim(), names.join(", ")))
+                }
+                _ => edited(r),
+            }
+        }
         ["--sort", tab, sort] => match (tab_name(tab), Sort::parse(sort)) {
             (Some(tab), Some(sort)) => edited(config::edit(|l| config::set_sort(l, &tab, sort))),
             _ => misuse(&usage()),
