@@ -2,13 +2,13 @@
 
 use serde::Deserialize;
 
-use super::{ForgeError, Id, Login, Name, Net, Nodes, Res, parse};
+use super::{ForgeError, Id, Login, Name, Net, Nodes, Res, parse, quote};
 use crate::report::{CheckState, Fetched, Issue, Pr, Release};
 
 const GITHUB_QUERY: &str = "query($o:String!,$n:String!){ repository(owner:$o,name:$n){
   url pushedAt stargazerCount forkCount isPrivate
   defaultBranchRef{ name target{ ... on Commit{ statusCheckRollup{state} } } }
-  releases(first:1, orderBy:{field:CREATED_AT, direction:DESC}){ nodes{tagName publishedAt isPrerelease} }
+  releases(first:10, orderBy:{field:CREATED_AT, direction:DESC}){ nodes{tagName publishedAt isPrerelease isDraft} }
   issues(states:OPEN, first:30, orderBy:{field:CREATED_AT, direction:DESC}){ totalCount nodes{number title url createdAt labels(first:3){nodes{name}}} }
   pullRequests(states:OPEN, first:30){ totalCount nodes{number title url isDraft reviewDecision author{login}
     commits(last:1){nodes{commit{statusCheckRollup{state}}}} } }
@@ -80,6 +80,9 @@ struct GhRelease {
     tag_name: String,
     published_at: Option<String>,
     is_prerelease: bool,
+    /// drafts are listed to anyone with push access; they are not released yet
+    #[serde(default)]
+    is_draft: bool,
 }
 
 #[derive(Deserialize)]
@@ -143,9 +146,11 @@ pub(super) fn fetch(net: &dyn Net, full: &str) -> Res<Fetched> {
         None => (String::new(), CheckState::NoChecks),
     };
     let pr_total = r.pull_requests.total_count;
-    let rel = r.releases.nodes.into_iter().next();
+    // the newest release that is out: a draft is not (and its tag may not exist yet)
+    let rel = r.releases.nodes.into_iter().find(|x| !x.is_draft);
     let unreleased = rel.as_ref().and_then(|rel| {
-        let path = format!("repos/{full}/compare/{}...{branch}", rel.tag_name);
+        // git allows # % ? in tag and branch names: encoded, they stay part of the path
+        let path = format!("repos/{full}/compare/{}...{}", quote(&rel.tag_name, "/"), quote(&branch, "/"));
         parse::<GhCompare>("compare", net.gh(&["api", &path]).ok()?).ok().map(|c| c.ahead_by)
     });
     Ok(Fetched {
@@ -204,13 +209,17 @@ mod tests {
 
     fn github_answer(args: &str) -> Reply {
         if args.contains("/compare/") {
-            return reply(json!({"ahead_by": 3, "status": "ahead"}));
+            // only the encoded tag of the release that is out (not the draft) is answered
+            let n = if args.ends_with("/compare/v1%23x...main") { 3 } else { 99 };
+            return reply(json!({"ahead_by": n, "status": "ahead"}));
         }
         reply(json!({"data": {"repository": {
             "url": "https://github.com/o/r", "pushedAt": "2026-01-01T00:00:00Z", "stargazerCount": 5,
             "forkCount": 1, "isPrivate": false,
             "defaultBranchRef": {"name": "main", "target": {"statusCheckRollup": {"state": "SUCCESS"}}},
-            "releases": {"nodes": [{"tagName": "v1", "publishedAt": "2026-01-01T00:00:00Z", "isPrerelease": false}]},
+            "releases": {"nodes": [
+                {"tagName": "v2#rc", "publishedAt": null, "isPrerelease": false, "isDraft": true},
+                {"tagName": "v1#x", "publishedAt": "2026-01-01T00:00:00Z", "isPrerelease": false, "isDraft": false}]},
             "issues": {"totalCount": 0, "nodes": []},
             "pullRequests": {"totalCount": 2, "nodes": [
                 {"number": 7, "title": "new", "url": "https://github.com/o/r/pull/7", "isDraft": false,
@@ -225,6 +234,8 @@ mod tests {
         let card = check_with(&fake(github_answer), "o/r");
         let ok = card.ok().unwrap();
         assert_eq!((&ok.ci, ok.unreleased, ok.alerts), (&CheckState::Passed, Some(3), 0));
+        // the draft on top is skipped: the release is the newest one that is out
+        assert_eq!(ok.release.as_ref().map(|r| r.tag.as_str()), Some("v1#x"));
         assert_eq!(ok.prs[0].ci, CheckState::Unknown("stale".into()));
         assert_eq!(ok.prs[0].by, "?");
         assert_eq!(ok.prs[1].ci, CheckState::NoChecks);

@@ -371,9 +371,15 @@ pub fn age(iso: &str) -> String {
 
 /// `repo-status --text [TAB]`
 pub fn text_mode(tabs: &[Tab], only: Option<&str>) -> String {
-    let cards = check_all(&crate::config::all_repos(tabs));
+    text_with(tabs, only, check_all)
+}
+
+fn text_with(tabs: &[Tab], only: Option<&str>, check: impl Fn(&[String]) -> HashMap<String, Card>) -> String {
+    // only the repos that are printed get checked: `--text TAB` waits for that tab alone
+    let shown: Vec<Tab> = tabs.iter().filter(|t| only.is_none_or(|o| o == t.name)).cloned().collect();
+    let cards = check(&crate::config::all_repos(&shown));
     let mut out = String::new();
-    for tab in tabs.iter().filter(|t| only.is_none_or(|o| o == t.name)) {
+    for tab in &shown {
         out += &format!("\n##### {}\n   {}\n", tab.name, totals_line(&tab.repos, &cards));
         for repo in ordered(&tab.repos, tab.sort, &cards) {
             let c = &cards[&repo];
@@ -505,5 +511,27 @@ mod tests {
             assert_eq!(card.result.as_ref().err(), Some(&ForgeError::Internal), "{repo}");
             assert_eq!(card.todo, ["press Refresh to try again"]);
         }
+    }
+
+    #[test]
+    fn text_of_one_tab_checks_only_that_tab() {
+        use crate::config::Tab;
+        let tab = |name: &str, repos: &[&str]| Tab {
+            name: name.into(),
+            repos: repos.iter().map(|r| r.to_string()).collect(),
+            sort: Sort::Mine,
+        };
+        let tabs = [tab("A", &["o/a", "o/both"]), tab("B", &["o/b", "o/both"])];
+        let asked = std::sync::Mutex::new(Vec::new());
+        let check = |repos: &[String]| -> HashMap<String, Card> {
+            asked.lock().unwrap().extend(repos.iter().cloned());
+            repos.iter().map(|r| (r.clone(), card(r, 1, 0).1)).collect()
+        };
+        let out = text_with(&tabs, Some("B"), check);
+        assert_eq!(*asked.lock().unwrap(), ["o/b", "o/both"]);
+        assert!(out.contains("##### B") && !out.contains("##### A"), "{out}");
+        asked.lock().unwrap().clear();
+        text_with(&tabs, None, check);
+        assert_eq!(*asked.lock().unwrap(), ["o/a", "o/both", "o/b"]);
     }
 }
